@@ -71,8 +71,13 @@ impl JsonFlags {
             return Ok(());
         }
 
-        if self.template.is_some() {
-            return Err(FlagError::new("--template is not supported yet (#33)").into());
+        if let Some(tmpl) = &self.template {
+            let out = render_template(&projected, tmpl)?;
+            io.print(&out);
+            if !out.ends_with('\n') {
+                io.println("");
+            }
+            return Ok(());
         }
 
         io.println(&serde_json::to_string_pretty(&projected)?);
@@ -105,6 +110,42 @@ fn project_object(value: Value, fields: &[String]) -> Value {
             Value::Object(out)
         }
         other => other,
+    }
+}
+
+/// Render `value` through a [`tinytemplate`] `tmpl`, returning the output.
+///
+/// tinytemplate renders a Serialize context and supports `{ field }`,
+/// `{{ for x in field }}…{{ endfor }}`, and `{{ if … }}`. It cannot iterate a
+/// bare top-level array, so a projected **list** result is exposed to the
+/// template under the key `items` (i.e. `{{ for x in items }}…`); an object is
+/// rendered against directly. HTML-escaping is disabled so URLs and quotes pass
+/// through unchanged.
+///
+/// # Errors
+/// Returns a [`FlagError`] (`invalid template: …`) for a malformed template or
+/// a render-time failure.
+fn render_template(value: &Value, tmpl: &str) -> anyhow::Result<String> {
+    let ctx = template_context(value);
+    let mut tt = tinytemplate::TinyTemplate::new();
+    tt.set_default_formatter(&tinytemplate::format_unescaped);
+    tt.add_template("bb", tmpl)
+        .map_err(|e| FlagError::new(format!("invalid template: {e}")))?;
+    tt.render("bb", &ctx)
+        .map_err(|e| FlagError::new(format!("invalid template: {e}")).into())
+}
+
+/// Build the context [`Value`] for [`render_template`]: arrays are wrapped as
+/// `{ "items": <array> }` (tinytemplate can't iterate a bare top-level array);
+/// any other value is passed through unchanged.
+fn template_context(value: &Value) -> Value {
+    match value {
+        Value::Array(_) => {
+            let mut map = Map::new();
+            map.insert("items".to_owned(), value.clone());
+            Value::Object(map)
+        }
+        other => other.clone(),
     }
 }
 
@@ -330,5 +371,83 @@ mod tests {
         let v = json!([{"id": 1}]);
         let err = flags.emit(&io, v).unwrap_err();
         assert!(err.to_string().contains("invalid jq expression"));
+    }
+
+    // ---- render_template (direct, same-module access to the private fn) ----
+
+    #[test]
+    fn template_renders_object_fields() {
+        let v = json!({"id": 1, "title": "x"});
+        let out = render_template(&v, "#{id} {title}").unwrap();
+        assert_eq!(out, "#1 x");
+    }
+
+    #[test]
+    fn template_exposes_array_as_items() {
+        let v = json!([{"id": 1}, {"id": 2}]);
+        let out = render_template(&v, "{{ for i in items }}{i.id}\n{{ endfor }}").unwrap();
+        assert!(out.contains('1'), "expected `1` in {out:?}");
+        assert!(out.contains('2'), "expected `2` in {out:?}");
+    }
+
+    #[test]
+    fn template_does_not_html_escape() {
+        // The unescaped formatter must leave quotes/ampersands intact.
+        let v = json!({"url": "https://x/?a=1&b=2", "q": "a\"b"});
+        let out = render_template(&v, "{url} {q}").unwrap();
+        assert_eq!(out, "https://x/?a=1&b=2 a\"b");
+    }
+
+    #[test]
+    fn template_invalid_errors() {
+        let v = json!({"id": 1});
+        let err = render_template(&v, "{ unclosed").unwrap_err();
+        assert!(
+            err.to_string().contains("invalid template"),
+            "unexpected error: {err}"
+        );
+    }
+
+    // ---- end-to-end through JsonFlags::emit + IoStreams::test() ----
+
+    #[test]
+    fn emit_with_template_object_adds_trailing_newline() {
+        let (io, bufs) = IoStreams::test();
+        let flags = JsonFlags {
+            json: vec!["id".to_owned(), "title".to_owned()],
+            jq: None,
+            template: Some("#{id} {title}".to_owned()),
+        };
+        let v = json!({"id": 1, "title": "x", "extra": true});
+        flags.emit(&io, v).unwrap();
+        // projection keeps id+title; emit adds a final newline for the terminal.
+        assert_eq!(bufs.stdout_string(), "#1 x\n");
+    }
+
+    #[test]
+    fn emit_with_template_array_exposed_as_items() {
+        let (io, bufs) = IoStreams::test();
+        let flags = JsonFlags {
+            json: vec!["id".to_owned()],
+            jq: None,
+            template: Some("{{ for i in items }}{i.id}\n{{ endfor }}".to_owned()),
+        };
+        let v = json!([{"id": 1, "extra": true}, {"id": 2}]);
+        flags.emit(&io, v).unwrap();
+        let out = bufs.stdout_string();
+        assert!(out.contains('1') && out.contains('2'), "got {out:?}");
+    }
+
+    #[test]
+    fn emit_with_template_invalid_errors() {
+        let (io, _bufs) = IoStreams::test();
+        let flags = JsonFlags {
+            json: vec!["id".to_owned()],
+            jq: None,
+            template: Some("{ unclosed".to_owned()),
+        };
+        let v = json!({"id": 1});
+        let err = flags.emit(&io, v).unwrap_err();
+        assert!(err.to_string().contains("invalid template"));
     }
 }

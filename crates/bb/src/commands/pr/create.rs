@@ -1,7 +1,7 @@
 //! `bb pr create` — open a pull request for the current branch.
 
 use bb_api::models::{PullRequest, Repository};
-use bb_api::BitbucketClient;
+use bb_api::{BitbucketClient, Membership};
 use bb_core::{AuthError, Context, FlagError, RepoId};
 use clap::Args;
 
@@ -48,12 +48,19 @@ struct Endpoint<'a> {
 }
 
 #[derive(serde::Serialize)]
+struct Reviewer {
+    uuid: String,
+}
+
+#[derive(serde::Serialize)]
 struct CreatePrBody<'a> {
     title: &'a str,
     source: Endpoint<'a>,
     destination: Endpoint<'a>,
     description: &'a str,
     close_source_branch: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    reviewers: Vec<Reviewer>,
 }
 
 /// Run `bb pr create`.
@@ -82,12 +89,6 @@ pub fn run(ctx: &Context, args: CreateArgs) -> anyhow::Result<()> {
         Some(b) => b.clone(),
         None => default_base(&client, &repo)?,
     };
-
-    // Reviewers are not resolved until Epic 1.
-    if !args.reviewer.is_empty() {
-        ctx.io
-            .eprintln("note: reviewer resolution lands in Epic 1; --reviewer is ignored for now.");
-    }
 
     // --web short-circuits to the compare page.
     if args.web {
@@ -122,6 +123,9 @@ pub fn run(ctx: &Context, args: CreateArgs) -> anyhow::Result<()> {
         }
     };
 
+    // Resolve any requested reviewers to UUIDs (one members fetch, on demand).
+    let reviewers = resolve_reviewers(&client, &repo, &args.reviewer)?;
+
     let payload = CreatePrBody {
         title: &title,
         source: Endpoint {
@@ -132,6 +136,7 @@ pub fn run(ctx: &Context, args: CreateArgs) -> anyhow::Result<()> {
         },
         description: &body,
         close_source_branch: args.close_source_branch,
+        reviewers,
     };
 
     let path = format!(
@@ -180,6 +185,70 @@ fn default_base(client: &BitbucketClient, repo: &RepoId) -> anyhow::Result<Strin
     Ok(repo
         .mainbranch
         .map_or_else(|| "main".to_owned(), |m| m.name))
+}
+
+/// Resolve `--reviewer` strings to workspace-member UUIDs.
+///
+/// Returns an empty vec without any HTTP round-trip when no reviewers were
+/// requested. Otherwise fetches the workspace member list once and matches each
+/// requested string (case-insensitively) against any of a member's `uuid`,
+/// `account_id`, `username`, `nickname`, or `display_name`.
+///
+/// # Errors
+/// Returns [`FlagError`] naming every requested reviewer that did not match a
+/// member (or matched a member that has no UUID). Propagates API errors from the
+/// member fetch.
+fn resolve_reviewers(
+    client: &BitbucketClient,
+    repo: &RepoId,
+    requested: &[String],
+) -> anyhow::Result<Vec<Reviewer>> {
+    if requested.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let path = format!("/workspaces/{}/members", repo.workspace());
+    let members: Vec<Membership> = client.paginate::<Membership>(&path, None)?;
+
+    let mut resolved = Vec::with_capacity(requested.len());
+    let mut unresolved = Vec::new();
+
+    for want in requested {
+        match members
+            .iter()
+            .filter_map(|m| m.user.as_ref())
+            .find(|u| member_matches(u, want))
+            .and_then(|u| u.uuid.clone())
+        {
+            Some(uuid) => resolved.push(Reviewer { uuid }),
+            None => unresolved.push(want.clone()),
+        }
+    }
+
+    if !unresolved.is_empty() {
+        return Err(FlagError::new(format!(
+            "could not resolve reviewer(s): {}",
+            unresolved.join(", ")
+        ))
+        .into());
+    }
+
+    Ok(resolved)
+}
+
+/// Whether `user` matches the requested reviewer string on any identity field,
+/// compared case-insensitively.
+fn member_matches(user: &bb_api::User, want: &str) -> bool {
+    [
+        user.uuid.as_deref(),
+        user.account_id.as_deref(),
+        user.username.as_deref(),
+        user.nickname.as_deref(),
+        user.display_name.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|field| field.eq_ignore_ascii_case(want))
 }
 
 /// Minimal percent-encoding for URL query/path values (used for the `--web`
@@ -447,6 +516,104 @@ mod tests {
                 "https://bitbucket.org/acme/widgets/pull-requests/new?source=feature%2Fx&dest=main"
             ),
             "got: {out}"
+        );
+    }
+
+    #[test]
+    fn create_resolves_reviewers_to_uuids() {
+        let h = Arc::new(FakeTransport::new());
+        // The members list is fetched first (only because reviewers were requested).
+        h.stub(
+            "list members",
+            FakeTransport::rest(Method::Get, "/workspaces/acme/members"),
+            FakeTransport::json(
+                200,
+                r#"{"values": [
+                    {"user": {"nickname": "alice", "uuid": "{a}"}},
+                    {"user": {"nickname": "bob", "uuid": "{b}"}}
+                ]}"#,
+            ),
+        );
+        h.stub(
+            "create pr",
+            FakeTransport::rest(Method::Post, "/pullrequests"),
+            FakeTransport::json(
+                201,
+                r#"{"id": 7, "links": {"html": {"href": "https://bitbucket.org/acme/widgets/pull-requests/7"}}}"#,
+            ),
+        );
+        let transport: Arc<dyn Transport> = h.clone();
+        let prompter = Arc::new(ScriptedPrompter::new());
+        let (ctx, _bufs) = test_context(
+            transport,
+            git_with_branch("feature/x"),
+            config(),
+            prompter,
+            false,
+        );
+
+        let a = CreateArgs {
+            title: Some("Add widget".to_owned()),
+            base: Some("main".to_owned()),
+            reviewer: vec!["alice".to_owned(), "bob".to_owned()],
+            ..create_args()
+        };
+        run(&ctx, a).unwrap();
+
+        let reqs = h.requests.lock().unwrap();
+        let post = reqs
+            .iter()
+            .find(|r| r.method == Method::Post)
+            .expect("a POST");
+        let body: serde_json::Value =
+            serde_json::from_slice(post.body.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            body["reviewers"],
+            serde_json::json!([{"uuid": "{a}"}, {"uuid": "{b}"}])
+        );
+    }
+
+    #[test]
+    fn create_unknown_reviewer_is_flag_error() {
+        let h = Arc::new(FakeTransport::new());
+        // The members list lacks the requested reviewer; the create POST is never
+        // made, so it is intentionally NOT stubbed.
+        h.stub(
+            "list members",
+            FakeTransport::rest(Method::Get, "/workspaces/acme/members"),
+            FakeTransport::json(
+                200,
+                r#"{"values": [{"user": {"nickname": "alice", "uuid": "{a}"}}]}"#,
+            ),
+        );
+        let transport: Arc<dyn Transport> = h.clone();
+        let prompter = Arc::new(ScriptedPrompter::new());
+        let (ctx, _bufs) = test_context(
+            transport,
+            git_with_branch("feature/x"),
+            config(),
+            prompter,
+            false,
+        );
+
+        let a = CreateArgs {
+            title: Some("Add widget".to_owned()),
+            base: Some("main".to_owned()),
+            reviewer: vec!["ghost".to_owned()],
+            ..create_args()
+        };
+        let err = run(&ctx, a).unwrap_err();
+        let flag = err.downcast_ref::<FlagError>().expect("FlagError");
+        assert!(
+            flag.to_string().contains("ghost"),
+            "error should name the unresolved reviewer: {flag}"
+        );
+
+        // No create POST was made.
+        let reqs = h.requests.lock().unwrap();
+        assert!(
+            reqs.iter().all(|r| r.method != Method::Post),
+            "create POST must not be made when a reviewer is unresolved"
         );
     }
 }
