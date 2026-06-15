@@ -39,6 +39,43 @@ pub struct Repository {
     pub is_private: Option<bool>,
     pub description: Option<String>,
     pub mainbranch: Option<MainBranch>,
+    pub links: Option<RepoLinks>,
+}
+
+/// A repository's `links` (the subset we use: web URL + clone URLs).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RepoLinks {
+    pub html: Option<Link>,
+    #[serde(default)]
+    pub clone: Vec<CloneLink>,
+}
+
+/// One clone URL entry (`{ "name": "https"|"ssh", "href": "..." }`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct CloneLink {
+    pub name: Option<String>,
+    pub href: String,
+}
+
+impl Repository {
+    #[must_use]
+    pub fn html_url(&self) -> Option<&str> {
+        self.links
+            .as_ref()
+            .and_then(|l| l.html.as_ref())
+            .map(|h| h.href.as_str())
+    }
+
+    /// The clone URL for `protocol` (`"https"` or `"ssh"`), if present.
+    #[must_use]
+    pub fn clone_url(&self, protocol: &str) -> Option<&str> {
+        self.links
+            .as_ref()?
+            .clone
+            .iter()
+            .find(|c| c.name.as_deref() == Some(protocol))
+            .map(|c| c.href.as_str())
+    }
 }
 
 /// A branch name wrapper (`{ "name": "..." }`).
