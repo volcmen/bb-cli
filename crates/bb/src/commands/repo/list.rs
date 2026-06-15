@@ -7,6 +7,17 @@ use clap::Args;
 
 use crate::auth;
 
+/// JSON fields a repository can be projected to with `--json`.
+const FIELDS: &[&str] = &[
+    "slug",
+    "name",
+    "full_name",
+    "is_private",
+    "description",
+    "mainbranch",
+    "links",
+];
+
 #[derive(Args, Debug)]
 pub struct ListArgs {
     /// Workspace to list repositories for (defaults to the current repo's workspace)
@@ -15,6 +26,8 @@ pub struct ListArgs {
     /// Maximum number of repositories to list
     #[arg(long, short = 'L', default_value_t = 30)]
     pub limit: usize,
+    #[command(flatten)]
+    pub json: crate::output::JsonFlags,
 }
 
 /// Run `bb repo list`.
@@ -44,6 +57,12 @@ pub fn run(ctx: &Context, args: ListArgs) -> anyhow::Result<()> {
     let pagelen = args.limit.clamp(1, 100);
     let path = format!("/repositories/{workspace}?pagelen={pagelen}&sort=-updated_on");
     let repos: Vec<Repository> = client.paginate(&path, Some(args.limit))?;
+
+    if args.json.requested() {
+        args.json.validate(FIELDS)?;
+        args.json.emit(&ctx.io, serde_json::to_value(&repos)?)?;
+        return Ok(());
+    }
 
     if repos.is_empty() {
         ctx.io
@@ -186,6 +205,7 @@ mod tests {
         ListArgs {
             workspace: workspace.map(ToOwned::to_owned),
             limit: 30,
+            json: crate::output::JsonFlags::default(),
         }
     }
 
@@ -313,6 +333,89 @@ mod tests {
         // 250 clamps to the API max of 100.
         assert!(url.contains("pagelen=100"), "url: {url}");
         assert!(url.contains("sort=-updated_on"), "url: {url}");
+    }
+
+    #[test]
+    fn list_json_emits_projected_fields() {
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "list json",
+            FakeTransport::rest(Method::Get, "/repositories/acme"),
+            FakeTransport::json(200, TWO_REPOS),
+        );
+        let transport: Arc<dyn Transport> = h.clone();
+        let prompter = Arc::new(ScriptedPrompter::new());
+        let (ctx, bufs) = test_context(transport, no_git(), config(), prompter, false);
+
+        let a = ListArgs {
+            json: crate::output::JsonFlags {
+                json: vec!["slug".into(), "full_name".into(), "is_private".into()],
+                jq: None,
+                template: None,
+            },
+            ..list_args(Some("acme"))
+        };
+        run(&ctx, a).unwrap();
+
+        let out = bufs.stdout_string();
+        let v: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+        let arr = v.as_array().expect("array");
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["slug"], "widgets");
+        assert_eq!(arr[0]["full_name"], "acme/widgets");
+        assert_eq!(arr[0]["is_private"], true);
+        // Unrequested fields are projected away.
+        assert!(arr[0].get("mainbranch").is_none(), "out: {out}");
+    }
+
+    #[test]
+    fn list_json_empty_is_empty_array() {
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "list json empty",
+            FakeTransport::rest(Method::Get, "/repositories/acme"),
+            FakeTransport::json(200, r#"{"values": []}"#),
+        );
+        let transport: Arc<dyn Transport> = h.clone();
+        let prompter = Arc::new(ScriptedPrompter::new());
+        let (ctx, bufs) = test_context(transport, no_git(), config(), prompter, false);
+
+        let a = ListArgs {
+            json: crate::output::JsonFlags {
+                json: vec!["slug".into()],
+                jq: None,
+                template: None,
+            },
+            ..list_args(Some("acme"))
+        };
+        run(&ctx, a).unwrap();
+
+        let v: serde_json::Value = serde_json::from_str(&bufs.stdout_string()).expect("valid JSON");
+        assert_eq!(v, serde_json::json!([]));
+    }
+
+    #[test]
+    fn list_json_unknown_field_is_flag_error() {
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "list json bogus",
+            FakeTransport::rest(Method::Get, "/repositories/acme"),
+            FakeTransport::json(200, TWO_REPOS),
+        );
+        let transport: Arc<dyn Transport> = h.clone();
+        let prompter = Arc::new(ScriptedPrompter::new());
+        let (ctx, _bufs) = test_context(transport, no_git(), config(), prompter, false);
+
+        let a = ListArgs {
+            json: crate::output::JsonFlags {
+                json: vec!["bogus".into()],
+                jq: None,
+                template: None,
+            },
+            ..list_args(Some("acme"))
+        };
+        let err = run(&ctx, a).unwrap_err();
+        assert!(err.downcast_ref::<FlagError>().is_some());
     }
 
     #[test]

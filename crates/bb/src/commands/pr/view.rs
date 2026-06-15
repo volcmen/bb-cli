@@ -7,6 +7,22 @@ use clap::Args;
 use super::finder;
 use crate::auth;
 
+/// JSON fields a pull request can be projected to with `--json`.
+const FIELDS: &[&str] = &[
+    "id",
+    "title",
+    "state",
+    "source",
+    "destination",
+    "links",
+    "author",
+    "description",
+    "summary",
+    "close_source_branch",
+    "participants",
+    "reviewers",
+];
+
 #[derive(Args, Debug)]
 pub struct ViewArgs {
     /// Pull request id (defaults to the PR for the current branch)
@@ -15,6 +31,8 @@ pub struct ViewArgs {
     /// Open the pull request in the browser
     #[arg(long)]
     pub web: bool,
+    #[command(flatten)]
+    pub json: crate::output::JsonFlags,
 }
 
 /// Run `bb pr view`.
@@ -33,6 +51,12 @@ pub fn run(ctx: &Context, args: ViewArgs) -> anyhow::Result<()> {
     let client = BitbucketClient::new(ctx.transport.clone(), Some(header));
 
     let pr = finder::resolve(ctx, &client, &repo, args.id.as_deref())?;
+
+    if args.json.requested() {
+        args.json.validate(FIELDS)?;
+        args.json.emit(&ctx.io, serde_json::to_value(&pr)?)?;
+        return Ok(());
+    }
 
     if args.web {
         match pr.html_url() {
@@ -146,6 +170,7 @@ mod tests {
         ViewArgs {
             id: id.map(ToOwned::to_owned),
             web,
+            json: crate::output::JsonFlags::default(),
         }
     }
 
@@ -276,6 +301,93 @@ mod tests {
 
         run(&ctx, args(None, false)).unwrap();
         assert!(bufs.stdout_string().contains("#7 Branch PR"));
+    }
+
+    #[test]
+    fn view_json_emits_projected_fields() {
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "get pr 42 json",
+            FakeTransport::rest(Method::Get, "/pullrequests/42"),
+            FakeTransport::json(200, PR_42),
+        );
+        let transport: Arc<dyn Transport> = h.clone();
+        let prompter = Arc::new(ScriptedPrompter::new());
+        let (ctx, bufs) = test_context(transport, git(), config(), prompter, false);
+
+        let a = ViewArgs {
+            id: Some("42".to_owned()),
+            web: false,
+            json: crate::output::JsonFlags {
+                json: vec!["id".into(), "title".into(), "state".into()],
+                jq: None,
+                template: None,
+            },
+        };
+        run(&ctx, a).unwrap();
+
+        let out = bufs.stdout_string();
+        let v: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+        assert_eq!(v["id"], 42);
+        assert_eq!(v["title"], "Add widget");
+        assert_eq!(v["state"], "OPEN");
+        // Unrequested fields are projected away.
+        assert!(v.get("author").is_none(), "out: {out}");
+    }
+
+    #[test]
+    fn view_json_takes_precedence_over_web() {
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "get pr 42 json web",
+            FakeTransport::rest(Method::Get, "/pullrequests/42"),
+            FakeTransport::json(200, PR_42),
+        );
+        let transport: Arc<dyn Transport> = h.clone();
+        let prompter = Arc::new(ScriptedPrompter::new());
+        let (ctx, bufs) = test_context(transport, git(), config(), prompter, false);
+
+        let a = ViewArgs {
+            id: Some("42".to_owned()),
+            web: true,
+            json: crate::output::JsonFlags {
+                json: vec!["id".into()],
+                jq: None,
+                template: None,
+            },
+        };
+        run(&ctx, a).unwrap();
+
+        let out = bufs.stdout_string();
+        // --json wins: JSON is emitted, no browser-open message.
+        let v: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+        assert_eq!(v["id"], 42);
+        assert!(!out.contains("Opening"), "out: {out}");
+    }
+
+    #[test]
+    fn view_json_unknown_field_is_flag_error() {
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "get pr 42 json bogus",
+            FakeTransport::rest(Method::Get, "/pullrequests/42"),
+            FakeTransport::json(200, PR_42),
+        );
+        let transport: Arc<dyn Transport> = h.clone();
+        let prompter = Arc::new(ScriptedPrompter::new());
+        let (ctx, _bufs) = test_context(transport, git(), config(), prompter, false);
+
+        let a = ViewArgs {
+            id: Some("42".to_owned()),
+            web: false,
+            json: crate::output::JsonFlags {
+                json: vec!["bogus".into()],
+                jq: None,
+                template: None,
+            },
+        };
+        let err = run(&ctx, a).unwrap_err();
+        assert!(err.downcast_ref::<bb_core::FlagError>().is_some());
     }
 
     #[test]

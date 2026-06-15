@@ -5,8 +5,6 @@ mod browser;
 mod cli;
 mod commands;
 mod factory;
-// Wired into list/view commands in this epic (#31).
-#[allow(dead_code)]
 mod output;
 mod prompt;
 #[cfg(test)]

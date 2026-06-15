@@ -25,6 +25,9 @@ getrandom.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 url.workspace = true
+jaq-core.workspace = true
+jaq-std.workspace = true
+jaq-json.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true

@@ -8,6 +8,22 @@ use clap::Args;
 use super::render;
 use crate::auth;
 
+/// JSON fields a pull request can be projected to with `--json`.
+const FIELDS: &[&str] = &[
+    "id",
+    "title",
+    "state",
+    "source",
+    "destination",
+    "links",
+    "author",
+    "description",
+    "summary",
+    "close_source_branch",
+    "participants",
+    "reviewers",
+];
+
 #[derive(Args, Debug)]
 pub struct ListArgs {
     /// Filter by state
@@ -19,6 +35,8 @@ pub struct ListArgs {
     /// Filter by destination (base) branch
     #[arg(long)]
     pub base: Option<String>,
+    #[command(flatten)]
+    pub json: crate::output::JsonFlags,
 }
 
 /// Run `bb pr list`.
@@ -51,6 +69,12 @@ pub fn run(ctx: &Context, args: ListArgs) -> anyhow::Result<()> {
     }
 
     let prs: Vec<PullRequest> = client.paginate(&path, Some(args.limit))?;
+
+    if args.json.requested() {
+        args.json.validate(FIELDS)?;
+        args.json.emit(&ctx.io, serde_json::to_value(&prs)?)?;
+        return Ok(());
+    }
 
     if prs.is_empty() {
         ctx.io.println(&format!(
@@ -121,6 +145,7 @@ mod tests {
             state: "OPEN".to_owned(),
             limit: 30,
             base: None,
+            json: crate::output::JsonFlags::default(),
         }
     }
 
@@ -247,6 +272,89 @@ mod tests {
         let url = &reqs[0].url;
         // limit (5) < 50, so pagelen must be 5, not 50.
         assert!(url.contains("pagelen=5"), "url: {url}");
+    }
+
+    #[test]
+    fn list_json_emits_projected_fields() {
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "list json",
+            FakeTransport::rest(Method::Get, "/pullrequests"),
+            FakeTransport::json(200, TWO_PRS),
+        );
+        let transport: Arc<dyn Transport> = h.clone();
+        let prompter = Arc::new(ScriptedPrompter::new());
+        let (ctx, bufs) = test_context(transport, git(), config(), prompter, false);
+
+        let a = ListArgs {
+            json: crate::output::JsonFlags {
+                json: vec!["id".into(), "title".into(), "state".into()],
+                jq: None,
+                template: None,
+            },
+            ..list_args()
+        };
+        run(&ctx, a).unwrap();
+
+        let out = bufs.stdout_string();
+        let v: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+        let arr = v.as_array().expect("array");
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["id"], 7);
+        assert_eq!(arr[0]["title"], "Fix bug");
+        assert_eq!(arr[0]["state"], "OPEN");
+        // Unrequested fields are projected away.
+        assert!(arr[0].get("source").is_none(), "out: {out}");
+    }
+
+    #[test]
+    fn list_json_empty_is_empty_array() {
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "list json empty",
+            FakeTransport::rest(Method::Get, "/pullrequests"),
+            FakeTransport::json(200, r#"{"values": []}"#),
+        );
+        let transport: Arc<dyn Transport> = h.clone();
+        let prompter = Arc::new(ScriptedPrompter::new());
+        let (ctx, bufs) = test_context(transport, git(), config(), prompter, false);
+
+        let a = ListArgs {
+            json: crate::output::JsonFlags {
+                json: vec!["id".into()],
+                jq: None,
+                template: None,
+            },
+            ..list_args()
+        };
+        run(&ctx, a).unwrap();
+
+        let v: serde_json::Value = serde_json::from_str(&bufs.stdout_string()).expect("valid JSON");
+        assert_eq!(v, serde_json::json!([]));
+    }
+
+    #[test]
+    fn list_json_unknown_field_is_flag_error() {
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "list json bogus",
+            FakeTransport::rest(Method::Get, "/pullrequests"),
+            FakeTransport::json(200, TWO_PRS),
+        );
+        let transport: Arc<dyn Transport> = h.clone();
+        let prompter = Arc::new(ScriptedPrompter::new());
+        let (ctx, _bufs) = test_context(transport, git(), config(), prompter, false);
+
+        let a = ListArgs {
+            json: crate::output::JsonFlags {
+                json: vec!["bogus".into()],
+                jq: None,
+                template: None,
+            },
+            ..list_args()
+        };
+        let err = run(&ctx, a).unwrap_err();
+        assert!(err.downcast_ref::<bb_core::FlagError>().is_some());
     }
 
     #[test]

@@ -7,6 +7,17 @@ use clap::Args;
 
 use crate::auth;
 
+/// JSON fields a repository can be projected to with `--json`.
+const FIELDS: &[&str] = &[
+    "slug",
+    "name",
+    "full_name",
+    "is_private",
+    "description",
+    "mainbranch",
+    "links",
+];
+
 #[derive(Args, Debug)]
 pub struct ViewArgs {
     /// Repository as WORKSPACE/SLUG (defaults to the current repo)
@@ -15,6 +26,8 @@ pub struct ViewArgs {
     /// Open the repository in the browser
     #[arg(long)]
     pub web: bool,
+    #[command(flatten)]
+    pub json: crate::output::JsonFlags,
 }
 
 /// Run `bb repo view`.
@@ -46,6 +59,13 @@ pub fn run(ctx: &Context, args: ViewArgs) -> anyhow::Result<()> {
         }
         Err(e) => return Err(e.into()),
     };
+
+    if args.json.requested() {
+        args.json.validate(FIELDS)?;
+        args.json
+            .emit(&ctx.io, serde_json::to_value(&repository)?)?;
+        return Ok(());
+    }
 
     if args.web {
         let url = repository
@@ -146,6 +166,7 @@ mod tests {
         ViewArgs {
             repo: repo.map(ToOwned::to_owned),
             web,
+            json: crate::output::JsonFlags::default(),
         }
     }
 
@@ -277,6 +298,93 @@ mod tests {
         let (ctx, _bufs) = test_context(transport, no_git(), config(), prompter, false);
 
         let err = run(&ctx, args(Some("not-a-repo"), false)).unwrap_err();
+        assert!(err.downcast_ref::<FlagError>().is_some());
+    }
+
+    #[test]
+    fn view_json_emits_projected_fields() {
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "get repo json",
+            FakeTransport::rest(Method::Get, "/repositories/acme/widgets"),
+            FakeTransport::json(200, WIDGETS),
+        );
+        let transport: Arc<dyn Transport> = h.clone();
+        let prompter = Arc::new(ScriptedPrompter::new());
+        let (ctx, bufs) = test_context(transport, no_git(), config(), prompter, false);
+
+        let a = ViewArgs {
+            repo: Some("acme/widgets".to_owned()),
+            web: false,
+            json: crate::output::JsonFlags {
+                json: vec!["slug".into(), "full_name".into(), "is_private".into()],
+                jq: None,
+                template: None,
+            },
+        };
+        run(&ctx, a).unwrap();
+
+        let out = bufs.stdout_string();
+        let v: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+        assert_eq!(v["slug"], "widgets");
+        assert_eq!(v["full_name"], "acme/widgets");
+        assert_eq!(v["is_private"], true);
+        // Unrequested fields are projected away.
+        assert!(v.get("description").is_none(), "out: {out}");
+    }
+
+    #[test]
+    fn view_json_takes_precedence_over_web() {
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "get repo json web",
+            FakeTransport::rest(Method::Get, "/repositories/acme/widgets"),
+            FakeTransport::json(200, WIDGETS),
+        );
+        let transport: Arc<dyn Transport> = h.clone();
+        let prompter = Arc::new(ScriptedPrompter::new());
+        let (ctx, bufs) = test_context(transport, no_git(), config(), prompter, false);
+
+        let a = ViewArgs {
+            repo: Some("acme/widgets".to_owned()),
+            web: true,
+            json: crate::output::JsonFlags {
+                json: vec!["slug".into()],
+                jq: None,
+                template: None,
+            },
+        };
+        run(&ctx, a).unwrap();
+
+        let out = bufs.stdout_string();
+        // --json wins: JSON is emitted, no browser-open message.
+        let v: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+        assert_eq!(v["slug"], "widgets");
+        assert!(!out.contains("Opening"), "out: {out}");
+    }
+
+    #[test]
+    fn view_json_unknown_field_is_flag_error() {
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "get repo json bogus",
+            FakeTransport::rest(Method::Get, "/repositories/acme/widgets"),
+            FakeTransport::json(200, WIDGETS),
+        );
+        let transport: Arc<dyn Transport> = h.clone();
+        let prompter = Arc::new(ScriptedPrompter::new());
+        let (ctx, _bufs) = test_context(transport, no_git(), config(), prompter, false);
+
+        let a = ViewArgs {
+            repo: Some("acme/widgets".to_owned()),
+            web: false,
+            json: crate::output::JsonFlags {
+                json: vec!["bogus".into()],
+                jq: None,
+                template: None,
+            },
+        };
+        let err = run(&ctx, a).unwrap_err();
         assert!(err.downcast_ref::<FlagError>().is_some());
     }
 

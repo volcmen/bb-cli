@@ -110,10 +110,89 @@ fn project_object(value: Value, fields: &[String]) -> Value {
 
 /// Apply a jq `expression` to `value`, returning the rendered output.
 ///
-/// TODO(#32): implemented by the jaq integration. Kept as a stable seam so
-/// commands can wire `--jq` now.
-fn apply_jq(_value: &Value, _expr: &str) -> anyhow::Result<String> {
-    anyhow::bail!("--jq is not wired yet (#32)")
+/// Uses the pure-Rust [`jaq`](https://github.com/01mf02/jaq) engine. The
+/// expression is parsed and compiled (parse/compile errors surface as
+/// `invalid jq expression: ...`), then run against `value`. Each output value
+/// is rendered as compact JSON on its own line, matching jq's default.
+///
+/// # Errors
+/// Returns an error for an invalid expression or a runtime evaluation failure.
+fn apply_jq(value: &Value, expr: &str) -> anyhow::Result<String> {
+    use jaq_core::load::{Arena, File, Loader};
+    use jaq_core::{data, unwrap_valr, Compiler, Ctx, Vars};
+    use jaq_json::{read, Val};
+
+    // Convert the serde_json input into jaq's value type by round-tripping
+    // through compact JSON bytes (avoids the optional `serde` feature).
+    let input_bytes = serde_json::to_vec(value)?;
+    let input: Val = read::parse_single(&input_bytes)
+        .map_err(|e| anyhow::anyhow!("could not read JSON input for jq: {e}"))?;
+
+    let program = File {
+        code: expr,
+        path: (),
+    };
+
+    // Named filters (`keys`, `map`, …) from core + std + json.
+    let defs = jaq_core::defs()
+        .chain(jaq_std::defs())
+        .chain(jaq_json::defs());
+    let funs = jaq_core::funs()
+        .chain(jaq_std::funs())
+        .chain(jaq_json::funs());
+
+    let loader = Loader::new(defs);
+    let arena = Arena::default();
+
+    let modules = loader
+        .load(&arena, program)
+        .map_err(|errs| anyhow::anyhow!("invalid jq expression: {}", format_load_errors(&errs)))?;
+
+    let filter = Compiler::default()
+        .with_funs(funs)
+        .compile(modules)
+        .map_err(|errs| {
+            anyhow::anyhow!("invalid jq expression: {}", format_compile_errors(&errs))
+        })?;
+
+    let ctx = Ctx::<data::JustLut<Val>>::new(&filter.lut, Vars::new([]));
+
+    let mut out = String::new();
+    for result in filter.id.run((ctx, input)).map(unwrap_valr) {
+        let val = result.map_err(|e| anyhow::anyhow!("jq evaluation failed: {e}"))?;
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        // `Val`'s `Display` renders compact, uncolored JSON (jq's default).
+        out.push_str(&val.to_string());
+    }
+    Ok(out)
+}
+
+/// Render jaq's per-file load (parse) errors into a single readable line.
+fn format_load_errors<S, P>(errs: &jaq_core::load::Errors<S, P>) -> String
+where
+    S: core::fmt::Debug,
+    P: core::fmt::Debug,
+{
+    errs.iter()
+        .map(|(_file, err)| format!("{err:?}"))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// Render jaq's per-file compile errors into a single readable line.
+fn format_compile_errors<S, P>(
+    errs: &jaq_core::load::Errors<S, P, Vec<jaq_core::compile::Error<S>>>,
+) -> String
+where
+    S: core::fmt::Debug,
+    P: core::fmt::Debug,
+{
+    errs.iter()
+        .flat_map(|(_file, file_errs)| file_errs.iter().map(|e| format!("{e:?}")))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 #[cfg(test)]
@@ -162,5 +241,94 @@ mod tests {
         let v = json!({"id": 1, "title": "a", "extra": true});
         let out = project(v, &["id".to_owned()]);
         assert_eq!(out, json!({"id": 1}));
+    }
+
+    // ---- apply_jq (direct, same-module access to the private fn) ----
+
+    #[test]
+    fn jq_array_field_one_value_per_line() {
+        let v = json!([{"id": 1}, {"id": 2}]);
+        let out = apply_jq(&v, ".[].id").unwrap();
+        assert_eq!(out, "1\n2");
+    }
+
+    #[test]
+    fn jq_identity_on_object_is_compact_json() {
+        let v = json!({"id": 1, "title": "a"});
+        let out = apply_jq(&v, ".").unwrap();
+        // compact, no spaces, one line
+        assert_eq!(out, r#"{"id":1,"title":"a"}"#);
+    }
+
+    #[test]
+    fn jq_pipe_extracts_field_per_element() {
+        let v = json!([{"title": "x"}, {"title": "y"}]);
+        let out = apply_jq(&v, ".[] | .title").unwrap();
+        assert_eq!(out, "\"x\"\n\"y\"");
+    }
+
+    #[test]
+    fn jq_map_builds_array() {
+        let v = json!([{"id": 1}, {"id": 2}]);
+        let out = apply_jq(&v, "map(.id)").unwrap();
+        assert_eq!(out, "[1,2]");
+    }
+
+    #[test]
+    fn jq_uses_stdlib_filter() {
+        // `keys` comes from jaq-std; proves the std defs/funs are wired.
+        let v = json!({"b": 2, "a": 1});
+        let out = apply_jq(&v, "keys").unwrap();
+        assert_eq!(out, r#"["a","b"]"#);
+    }
+
+    #[test]
+    fn jq_invalid_expression_errors() {
+        let v = json!([{"id": 1}]);
+        let err = apply_jq(&v, ".[").unwrap_err();
+        assert!(
+            err.to_string().contains("invalid jq expression"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn jq_runtime_error_is_surfaced() {
+        // Indexing a number with a string key is a runtime type error.
+        let v = json!(1);
+        let err = apply_jq(&v, ".foo").unwrap_err();
+        assert!(
+            err.to_string().contains("jq evaluation failed"),
+            "unexpected error: {err}"
+        );
+    }
+
+    // ---- end-to-end through JsonFlags::emit + IoStreams::test() ----
+
+    #[test]
+    fn emit_with_jq_writes_filtered_lines_and_trailing_newline() {
+        let (io, bufs) = IoStreams::test();
+        let flags = JsonFlags {
+            json: vec!["id".to_owned()],
+            jq: Some(".[].id".to_owned()),
+            template: None,
+        };
+        let v = json!([{"id": 1, "extra": true}, {"id": 2}]);
+        flags.emit(&io, v).unwrap();
+        // projection keeps only `id`, jq pulls the ids; emit adds a final newline.
+        assert_eq!(bufs.stdout_string(), "1\n2\n");
+    }
+
+    #[test]
+    fn emit_with_jq_invalid_expression_errors() {
+        let (io, _bufs) = IoStreams::test();
+        let flags = JsonFlags {
+            json: vec!["id".to_owned()],
+            jq: Some(".[".to_owned()),
+            template: None,
+        };
+        let v = json!([{"id": 1}]);
+        let err = flags.emit(&io, v).unwrap_err();
+        assert!(err.to_string().contains("invalid jq expression"));
     }
 }
