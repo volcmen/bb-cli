@@ -4,7 +4,7 @@
 use bb_core::{FlagError, RepoId};
 use clap::{CommandFactory, Parser, Subcommand};
 
-use crate::commands::{auth::AuthArgs, pr::PrArgs, repo::RepoArgs};
+use crate::commands::{auth::AuthArgs, issue::IssueArgs, pr::PrArgs, repo::RepoArgs};
 use crate::factory;
 
 /// Full version string: `X.Y.Z (sha date)` (sha/date injected by `build.rs`).
@@ -48,6 +48,8 @@ enum Commands {
     Pr(PrArgs),
     /// Work with repositories
     Repo(RepoArgs),
+    /// Manage issues
+    Issue(IssueArgs),
 }
 
 /// Parse process arguments (auto-exits on `--version`/`--help`/parse errors).
@@ -82,6 +84,10 @@ pub fn dispatch(cli: Cli) -> anyhow::Result<()> {
         Some(Commands::Repo(args)) => {
             let ctx = factory::build_context(repo_override)?;
             crate::commands::repo::run(&ctx, args)
+        }
+        Some(Commands::Issue(args)) => {
+            let ctx = factory::build_context(repo_override)?;
+            crate::commands::issue::run(&ctx, args)
         }
         None => {
             let mut cmd = Cli::command();

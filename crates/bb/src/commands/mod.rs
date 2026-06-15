@@ -3,5 +3,6 @@
 //! one-package-per-command layout.
 
 pub mod auth;
+pub mod issue;
 pub mod pr;
 pub mod repo;

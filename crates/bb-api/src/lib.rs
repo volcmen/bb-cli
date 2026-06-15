@@ -13,7 +13,7 @@ pub mod testing;
 
 pub use client::BitbucketClient;
 pub use models::{
-    Branch, BranchRef, CloneLink, Link, Links, Participant, PullRequest, Rendered, RepoLinks,
-    RepoRef, Repository, User,
+    Branch, BranchRef, CloneLink, Issue, Link, Links, Participant, PullRequest, Rendered,
+    RepoLinks, RepoRef, Repository, User,
 };
 pub use transport::ReqwestTransport;
