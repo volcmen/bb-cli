@@ -2,7 +2,9 @@
 //! args + a [`Context`](bb_core::Context) into an action, mirroring `gh`'s
 //! one-package-per-command layout.
 
+pub mod api;
 pub mod auth;
+pub mod browse;
 pub mod issue;
 pub mod pipeline;
 pub mod pr;
