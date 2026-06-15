@@ -2,6 +2,7 @@
 
 mod approve;
 mod checkout;
+mod checks;
 mod close;
 mod create;
 mod diff;
@@ -40,6 +41,8 @@ enum PrCommands {
     Approve(approve::ApproveArgs),
     /// Check out a pull request's branch locally
     Checkout(checkout::CheckoutArgs),
+    /// Show CI/build checks for a pull request
+    Checks(checks::ChecksArgs),
 }
 
 /// Dispatch `bb pr <sub>`.
@@ -56,5 +59,6 @@ pub fn run(ctx: &Context, args: PrArgs) -> anyhow::Result<()> {
         PrCommands::Close(a) => close::run(ctx, a),
         PrCommands::Approve(a) => approve::run(ctx, a),
         PrCommands::Checkout(a) => checkout::run(ctx, a),
+        PrCommands::Checks(a) => checks::run(ctx, a),
     }
 }
