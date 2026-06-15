@@ -40,6 +40,7 @@ pub struct Repository {
     pub description: Option<String>,
     pub mainbranch: Option<MainBranch>,
     pub links: Option<RepoLinks>,
+    pub has_issues: Option<bool>,
 }
 
 /// A repository's `links` (the subset we use: web URL + clone URLs).
@@ -153,6 +154,33 @@ pub struct PullRequest {
     pub participants: Vec<Participant>,
     #[serde(default)]
     pub reviewers: Vec<User>,
+}
+
+/// A Bitbucket issue (issue tracker).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Issue {
+    pub id: u64,
+    pub title: Option<String>,
+    pub state: Option<String>,
+    pub kind: Option<String>,
+    pub priority: Option<String>,
+    pub content: Option<Rendered>,
+    pub reporter: Option<User>,
+    #[serde(default)]
+    pub links: Links,
+}
+
+impl Issue {
+    #[must_use]
+    pub fn html_url(&self) -> Option<&str> {
+        self.links.html_href()
+    }
+
+    /// The issue body (`content.raw`).
+    #[must_use]
+    pub fn body(&self) -> Option<&str> {
+        self.content.as_ref().and_then(|c| c.raw.as_deref())
+    }
 }
 
 /// Rendered content (e.g. `summary.raw`).
