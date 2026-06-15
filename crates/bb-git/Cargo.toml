@@ -1,0 +1,23 @@
+[package]
+name = "bb-git"
+description = "Git integration for bb-cli: shell-out client + Bitbucket remote-URL parsing."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bb-core.workspace = true
+which.workspace = true
+regex = { workspace = true, optional = true }
+
+[features]
+# Exposes the StubRunner test harness (needs regex) to downstream crates.
+test-util = ["dep:regex"]
+
+[dev-dependencies]
+regex.workspace = true
+
+[lints]
+workspace = true

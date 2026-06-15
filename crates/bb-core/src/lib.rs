@@ -1,0 +1,29 @@
+//! `bb-core` — the kernel of bb-cli.
+//!
+//! Holds the dependency-injection **seam traits** ([`Transport`], [`GitClient`],
+//! [`Prompter`], [`Browser`], [`ConfigProvider`]), the shared **data types**
+//! ([`RepoId`], [`HttpRequest`], [`HttpResponse`]), the terminal **IO layer**
+//! ([`IoStreams`], [`ColorScheme`]), the **error/exit-code** model, and the
+//! [`Context`] container that wires everything together.
+//!
+//! Concrete implementations of the seam traits live in the leaf crates
+//! (`bb-api`, `bb-config`, `bb-git`) and the `bb` binary. This mirrors the
+//! Factory pattern in GitHub's `gh` CLI: commands depend only on the traits, so
+//! every command is testable by swapping in fakes.
+
+pub mod context;
+pub mod error;
+pub mod http;
+pub mod io;
+pub mod repo;
+pub mod traits;
+
+pub use context::Context;
+pub use error::{
+    ApiError, ApiErrorItem, AuthError, CancelError, ConfigError, ExitCode, FlagError, GitError,
+    PromptError, SilentError,
+};
+pub use http::{HttpRequest, HttpResponse, Method};
+pub use io::{ColorScheme, IoStreams, TestBuffers};
+pub use repo::{RepoId, DEFAULT_HOST};
+pub use traits::{Browser, Commit, ConfigProvider, GitClient, Prompter, Remote, Transport};
