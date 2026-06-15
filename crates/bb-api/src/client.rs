@@ -140,6 +140,9 @@ impl BitbucketClient {
         limit: Option<usize>,
     ) -> Result<Vec<T>, ApiError> {
         let mut out: Vec<T> = Vec::new();
+        if limit == Some(0) {
+            return Ok(out);
+        }
         let mut url = self.full_url(path);
         loop {
             let resp = self

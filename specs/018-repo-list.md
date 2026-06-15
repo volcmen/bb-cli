@@ -11,7 +11,7 @@ List repositories in a workspace.
 
 ## Behavior & edge cases
 - Default workspace = current repo's workspace (`ctx.base_repo()`).
-- TTY table (full_name/slug, visibility, updated) / TSV when piped. Empty → message.
+- TTY table (name/full_name, visibility, default branch), sorted most-recently-updated first; TSV when piped. Empty → message. `-L 0` yields no results.
 
 ## Tests
 list renders table + TSV; default workspace; empty; not-authed → AuthError.

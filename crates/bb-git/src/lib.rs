@@ -125,7 +125,9 @@ impl GitClient for ShellGit {
     }
 
     fn clone_repo(&self, url: &str, dir: Option<&str>) -> Result<(), GitError> {
-        let mut args = vec!["clone", url];
+        // `--` stops git option parsing so a url/dir starting with `-` can't be
+        // interpreted as a flag (e.g. `--upload-pack=...`).
+        let mut args = vec!["clone", "--", url];
         if let Some(d) = dir {
             args.push(d);
         }
