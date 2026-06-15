@@ -92,12 +92,52 @@ pub struct PullRequest {
     #[serde(default)]
     pub links: Links,
     pub author: Option<User>,
+    pub description: Option<String>,
+    pub summary: Option<Rendered>,
+    pub close_source_branch: Option<bool>,
+    #[serde(default)]
+    pub participants: Vec<Participant>,
+    #[serde(default)]
+    pub reviewers: Vec<User>,
+}
+
+/// Rendered content (e.g. `summary.raw`).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Rendered {
+    pub raw: Option<String>,
+}
+
+/// A PR participant with their approval state.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Participant {
+    pub user: Option<User>,
+    pub role: Option<String>,
+    #[serde(default)]
+    pub approved: bool,
 }
 
 impl PullRequest {
     #[must_use]
     pub fn html_url(&self) -> Option<&str> {
         self.links.html_href()
+    }
+
+    /// Best available description text (`description`, then `summary.raw`).
+    #[must_use]
+    pub fn body(&self) -> Option<&str> {
+        self.description
+            .as_deref()
+            .or_else(|| self.summary.as_ref().and_then(|s| s.raw.as_deref()))
+    }
+
+    /// Users who have approved this PR.
+    #[must_use]
+    pub fn approvals(&self) -> Vec<&User> {
+        self.participants
+            .iter()
+            .filter(|p| p.approved)
+            .filter_map(|p| p.user.as_ref())
+            .collect()
     }
 }
 
