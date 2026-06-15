@@ -1,5 +1,6 @@
 //! `bb pr close` (decline).
 
+use bb_api::{BitbucketClient, PullRequest};
 use bb_core::Context;
 use clap::Args;
 
@@ -13,10 +14,121 @@ pub struct CloseArgs {
     pub message: Option<String>,
 }
 
-/// Run `bb pr close`.
+/// The JSON body sent to `POST .../pullrequests/{id}/decline`.
+#[derive(serde::Serialize)]
+struct DeclineBody<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<&'a str>,
+}
+
+/// Run `bb pr close` (decline the pull request).
 ///
 /// # Errors
-/// TODO(#22): implement.
-pub fn run(_ctx: &Context, _args: CloseArgs) -> anyhow::Result<()> {
-    anyhow::bail!("`bb pr close` is not implemented yet (#22)")
+/// Returns [`bb_core::AuthError`] when not authenticated, or propagates the
+/// API/git error.
+pub fn run(ctx: &Context, args: CloseArgs) -> anyhow::Result<()> {
+    let repo = ctx.base_repo()?;
+    let host = repo.host().to_owned();
+    let header = crate::auth::header_for(ctx.config.as_ref(), &host);
+    if header.is_none() {
+        return Err(bb_core::AuthError::new(host).into());
+    }
+    let client = BitbucketClient::new(ctx.transport.clone(), header);
+
+    let id = match args.id.as_deref() {
+        Some(s) => super::finder::parse_id(s)?,
+        None => super::finder::resolve(ctx, &client, &repo, None)?.id,
+    };
+
+    let body = DeclineBody {
+        message: args.message.as_deref(),
+    };
+    let path = format!(
+        "/repositories/{}/{}/pullrequests/{id}/decline",
+        repo.workspace(),
+        repo.slug()
+    );
+    let declined: PullRequest = client.post(&path, &body)?;
+
+    let state = declined.state.as_deref().unwrap_or("DECLINED");
+    ctx.io
+        .println(&format!("✓ Declined pull request #{id} (state: {state})"));
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use bb_api::testing::FakeTransport;
+    use bb_config::FileConfig;
+    use bb_core::{ConfigProvider, GitClient, Method, RepoId, Transport};
+    use bb_git::{ShellGit, StubRunner};
+
+    use super::*;
+    use crate::testsupport::{test_context, ScriptedPrompter};
+
+    const HOST: &str = "bitbucket.org";
+
+    fn authed_config() -> Arc<dyn ConfigProvider> {
+        let cfg = FileConfig::blank();
+        cfg.set(HOST, "auth_type", "app_password").unwrap();
+        cfg.set(HOST, "username", "u").unwrap();
+        cfg.set(HOST, "token", "t").unwrap();
+        Arc::new(cfg)
+    }
+
+    fn ctx_with(
+        http: Arc<FakeTransport>,
+        config: Arc<dyn ConfigProvider>,
+    ) -> (Context, bb_core::TestBuffers) {
+        let git: Arc<dyn GitClient> = Arc::new(ShellGit::new(Arc::new(StubRunner::new())));
+        let transport: Arc<dyn Transport> = http;
+        let (mut ctx, bufs) = test_context(
+            transport,
+            git,
+            config,
+            Arc::new(ScriptedPrompter::new()),
+            false,
+        );
+        ctx.repo_override = Some(RepoId::new("acme", "widgets"));
+        (ctx, bufs)
+    }
+
+    #[test]
+    fn close_happy_declines_and_prints_confirmation() {
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "POST decline",
+            FakeTransport::rest(Method::Post, "/pullrequests/42/decline"),
+            FakeTransport::json(200, r#"{"id":42,"title":"T","state":"DECLINED"}"#),
+        );
+        let (ctx, bufs) = ctx_with(h.clone(), authed_config());
+        let args = CloseArgs {
+            id: Some("42".to_owned()),
+            message: None,
+        };
+        run(&ctx, args).unwrap();
+
+        let out = bufs.stdout_string();
+        assert!(
+            out.contains("Declined pull request #42 (state: DECLINED)"),
+            "out: {out}"
+        );
+    }
+
+    #[test]
+    fn close_not_authed_returns_auth_error() {
+        let h = Arc::new(FakeTransport::new());
+        let (ctx, _bufs) = ctx_with(h.clone(), Arc::new(FileConfig::blank()));
+        let args = CloseArgs {
+            id: Some("42".to_owned()),
+            message: None,
+        };
+        let err = run(&ctx, args).unwrap_err();
+        assert!(
+            err.downcast_ref::<bb_core::AuthError>().is_some(),
+            "expected AuthError, got: {err:#}"
+        );
+    }
 }

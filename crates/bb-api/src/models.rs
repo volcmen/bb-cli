@@ -47,10 +47,12 @@ pub struct Branch {
     pub name: String,
 }
 
-/// A PR source/destination endpoint (`{ "branch": { "name": "..." } }`).
+/// A PR source/destination endpoint
+/// (`{ "branch": { "name": ... }, "repository": { "full_name": ... } }`).
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct BranchRef {
     pub branch: Option<Branch>,
+    pub repository: Option<RepoRef>,
 }
 
 impl BranchRef {
@@ -58,6 +60,21 @@ impl BranchRef {
     pub fn branch_name(&self) -> &str {
         self.branch.as_ref().map_or("", |b| b.name.as_str())
     }
+
+    /// The `full_name` (`workspace/slug`) of this endpoint's repository, if
+    /// present. Used to detect a cross-fork PR source.
+    #[must_use]
+    pub fn repo_full_name(&self) -> Option<&str> {
+        self.repository
+            .as_ref()
+            .and_then(|r| r.full_name.as_deref())
+    }
+}
+
+/// A repository reference embedded in a PR source/destination.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RepoRef {
+    pub full_name: Option<String>,
 }
 
 /// A single link (`{ "href": "..." }`).

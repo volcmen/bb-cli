@@ -60,7 +60,9 @@ fn find_by_branch(
     repo: &RepoId,
     branch: &str,
 ) -> anyhow::Result<PullRequest> {
-    let q = encode_query(&format!("source.branch.name=\"{branch}\""));
+    // Escape the BBQL string literal (quotes/backslashes) before encoding.
+    let escaped = branch.replace('\\', "\\\\").replace('"', "\\\"");
+    let q = encode_query(&format!("source.branch.name=\"{escaped}\""));
     let path = format!(
         "/repositories/{}/{}/pullrequests?state=OPEN&q={q}",
         repo.workspace(),
