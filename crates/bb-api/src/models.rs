@@ -47,10 +47,12 @@ pub struct Branch {
     pub name: String,
 }
 
-/// A PR source/destination endpoint (`{ "branch": { "name": "..." } }`).
+/// A PR source/destination endpoint
+/// (`{ "branch": { "name": ... }, "repository": { "full_name": ... } }`).
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct BranchRef {
     pub branch: Option<Branch>,
+    pub repository: Option<RepoRef>,
 }
 
 impl BranchRef {
@@ -58,6 +60,21 @@ impl BranchRef {
     pub fn branch_name(&self) -> &str {
         self.branch.as_ref().map_or("", |b| b.name.as_str())
     }
+
+    /// The `full_name` (`workspace/slug`) of this endpoint's repository, if
+    /// present. Used to detect a cross-fork PR source.
+    #[must_use]
+    pub fn repo_full_name(&self) -> Option<&str> {
+        self.repository
+            .as_ref()
+            .and_then(|r| r.full_name.as_deref())
+    }
+}
+
+/// A repository reference embedded in a PR source/destination.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RepoRef {
+    pub full_name: Option<String>,
 }
 
 /// A single link (`{ "href": "..." }`).
@@ -92,12 +109,52 @@ pub struct PullRequest {
     #[serde(default)]
     pub links: Links,
     pub author: Option<User>,
+    pub description: Option<String>,
+    pub summary: Option<Rendered>,
+    pub close_source_branch: Option<bool>,
+    #[serde(default)]
+    pub participants: Vec<Participant>,
+    #[serde(default)]
+    pub reviewers: Vec<User>,
+}
+
+/// Rendered content (e.g. `summary.raw`).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Rendered {
+    pub raw: Option<String>,
+}
+
+/// A PR participant with their approval state.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Participant {
+    pub user: Option<User>,
+    pub role: Option<String>,
+    #[serde(default)]
+    pub approved: bool,
 }
 
 impl PullRequest {
     #[must_use]
     pub fn html_url(&self) -> Option<&str> {
         self.links.html_href()
+    }
+
+    /// Best available description text (`description`, then `summary.raw`).
+    #[must_use]
+    pub fn body(&self) -> Option<&str> {
+        self.description
+            .as_deref()
+            .or_else(|| self.summary.as_ref().and_then(|s| s.raw.as_deref()))
+    }
+
+    /// Users who have approved this PR.
+    #[must_use]
+    pub fn approvals(&self) -> Vec<&User> {
+        self.participants
+            .iter()
+            .filter(|p| p.approved)
+            .filter_map(|p| p.user.as_ref())
+            .collect()
     }
 }
 

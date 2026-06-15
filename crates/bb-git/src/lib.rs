@@ -111,6 +111,18 @@ impl GitClient for ShellGit {
             .collect();
         Ok(commits)
     }
+
+    fn fetch(&self, remote: &str, refspec: &str) -> Result<(), GitError> {
+        self.run(&["fetch", remote, refspec]).map(|_| ())
+    }
+
+    fn checkout(&self, branch: &str) -> Result<(), GitError> {
+        self.run(&["checkout", branch]).map(|_| ())
+    }
+
+    fn add_remote(&self, name: &str, url: &str) -> Result<(), GitError> {
+        self.run(&["remote", "add", name, url]).map(|_| ())
+    }
 }
 
 #[cfg(test)]

@@ -1,8 +1,17 @@
 //! `bb pr` — pull request commands.
 
+mod approve;
+mod checkout;
+mod close;
 mod create;
+mod diff;
+// Used by the pr subcommands as they land (#19–#25).
+#[allow(dead_code)]
+mod finder;
 mod list;
+mod merge;
 mod render;
+mod view;
 
 use bb_core::Context;
 use clap::{Args, Subcommand};
@@ -19,6 +28,18 @@ enum PrCommands {
     Create(create::CreateArgs),
     /// List pull requests
     List(list::ListArgs),
+    /// View a pull request
+    View(view::ViewArgs),
+    /// View a pull request's diff
+    Diff(diff::DiffArgs),
+    /// Merge a pull request
+    Merge(merge::MergeArgs),
+    /// Close (decline) a pull request
+    Close(close::CloseArgs),
+    /// Approve a pull request (or remove your approval)
+    Approve(approve::ApproveArgs),
+    /// Check out a pull request's branch locally
+    Checkout(checkout::CheckoutArgs),
 }
 
 /// Dispatch `bb pr <sub>`.
@@ -29,5 +50,11 @@ pub fn run(ctx: &Context, args: PrArgs) -> anyhow::Result<()> {
     match args.command {
         PrCommands::Create(a) => create::run(ctx, a),
         PrCommands::List(a) => list::run(ctx, a),
+        PrCommands::View(a) => view::run(ctx, a),
+        PrCommands::Diff(a) => diff::run(ctx, a),
+        PrCommands::Merge(a) => merge::run(ctx, a),
+        PrCommands::Close(a) => close::run(ctx, a),
+        PrCommands::Approve(a) => approve::run(ctx, a),
+        PrCommands::Checkout(a) => checkout::run(ctx, a),
     }
 }

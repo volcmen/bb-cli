@@ -37,6 +37,12 @@ pub trait GitClient: Send + Sync {
     fn push(&self, remote: &str, refspec: &str) -> Result<(), GitError>;
     /// Commits in `base..head`, newest first.
     fn commits_between(&self, base: &str, head: &str) -> Result<Vec<Commit>, GitError>;
+    /// `git fetch <remote> <refspec>`.
+    fn fetch(&self, remote: &str, refspec: &str) -> Result<(), GitError>;
+    /// `git checkout <branch>`.
+    fn checkout(&self, branch: &str) -> Result<(), GitError>;
+    /// `git remote add <name> <url>`.
+    fn add_remote(&self, name: &str, url: &str) -> Result<(), GitError>;
 }
 
 /// Interactive prompt seam. The real impl uses `inquire`; tests use a scripted

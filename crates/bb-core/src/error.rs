@@ -33,8 +33,9 @@ impl ExitCode {
     }
 }
 
-/// A flag/usage error: the caller should print the message **and** the command
-/// usage, then exit with code 2.
+/// A flag/usage error raised during command execution: the message is printed
+/// and the process exits with code 1. (clap's own parse-time usage errors,
+/// e.g. an unknown flag, exit with code 2.)
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
 pub struct FlagError(pub String);
