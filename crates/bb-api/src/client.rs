@@ -87,6 +87,23 @@ impl BitbucketClient {
         }
     }
 
+    /// Send an arbitrary request and return the raw response **without** treating
+    /// a non-2xx status as an error (for the `bb api` passthrough). The auth
+    /// header and base URL are still applied; only transport failures error.
+    ///
+    /// # Errors
+    /// Returns [`ApiError::Network`] on transport failure.
+    pub fn execute_raw(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<Vec<u8>>,
+    ) -> Result<HttpResponse, ApiError> {
+        let url = self.full_url(path);
+        self.transport
+            .execute(self.build_request(method, &url, body))
+    }
+
     /// `GET path` → deserialize the JSON body as `T`.
     ///
     /// # Errors

@@ -5,7 +5,8 @@ use bb_core::{FlagError, RepoId};
 use clap::{CommandFactory, Parser, Subcommand};
 
 use crate::commands::{
-    auth::AuthArgs, issue::IssueArgs, pipeline::PipelineArgs, pr::PrArgs, repo::RepoArgs,
+    api::ApiArgs, auth::AuthArgs, browse::BrowseArgs, issue::IssueArgs, pipeline::PipelineArgs,
+    pr::PrArgs, repo::RepoArgs,
 };
 use crate::factory;
 
@@ -54,6 +55,10 @@ enum Commands {
     Issue(IssueArgs),
     /// View CI pipelines
     Pipeline(PipelineArgs),
+    /// Open a repository or pull request in the browser
+    Browse(BrowseArgs),
+    /// Make an authenticated Bitbucket API request
+    Api(ApiArgs),
 }
 
 /// Parse process arguments (auto-exits on `--version`/`--help`/parse errors).
@@ -96,6 +101,14 @@ pub fn dispatch(cli: Cli) -> anyhow::Result<()> {
         Some(Commands::Pipeline(args)) => {
             let ctx = factory::build_context(repo_override)?;
             crate::commands::pipeline::run(&ctx, args)
+        }
+        Some(Commands::Browse(args)) => {
+            let ctx = factory::build_context(repo_override)?;
+            crate::commands::browse::run(&ctx, args)
+        }
+        Some(Commands::Api(args)) => {
+            let ctx = factory::build_context(repo_override)?;
+            crate::commands::api::run(&ctx, args)
         }
         None => {
             let mut cmd = Cli::command();
