@@ -8,8 +8,15 @@ use serde::{Deserialize, Serialize};
 pub struct User {
     pub account_id: Option<String>,
     pub username: Option<String>,
+    pub nickname: Option<String>,
     pub display_name: Option<String>,
     pub uuid: Option<String>,
+}
+
+/// A workspace membership (`GET /2.0/workspaces/{ws}/members` → `{ user: {...} }`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Membership {
+    pub user: Option<User>,
 }
 
 impl User {
