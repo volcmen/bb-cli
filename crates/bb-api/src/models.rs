@@ -91,6 +91,7 @@ pub struct Branch {
 pub struct BranchRef {
     pub branch: Option<Branch>,
     pub repository: Option<RepoRef>,
+    pub commit: Option<CommitRef>,
 }
 
 impl BranchRef {
@@ -107,12 +108,102 @@ impl BranchRef {
             .as_ref()
             .and_then(|r| r.full_name.as_deref())
     }
+
+    /// The commit hash this endpoint points at, if present.
+    #[must_use]
+    pub fn commit_hash(&self) -> Option<&str> {
+        self.commit.as_ref().and_then(|c| c.hash.as_deref())
+    }
 }
 
 /// A repository reference embedded in a PR source/destination.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RepoRef {
     pub full_name: Option<String>,
+}
+
+/// A commit reference (`{ "hash": "..." }`) on a branch/PR endpoint or pipeline
+/// target.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CommitRef {
+    pub hash: Option<String>,
+}
+
+/// A Bitbucket Pipelines run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Pipeline {
+    pub uuid: Option<String>,
+    pub build_number: Option<u64>,
+    pub state: Option<PipelineState>,
+    pub target: Option<PipelineTarget>,
+    pub created_on: Option<String>,
+}
+
+impl Pipeline {
+    /// `state.name` (e.g. `PENDING`, `IN_PROGRESS`, `COMPLETED`).
+    #[must_use]
+    pub fn state_name(&self) -> &str {
+        self.state
+            .as_ref()
+            .and_then(|s| s.name.as_deref())
+            .unwrap_or("")
+    }
+
+    /// `state.result.name` (e.g. `SUCCESSFUL`, `FAILED`, `STOPPED`), if completed.
+    #[must_use]
+    pub fn result_name(&self) -> &str {
+        self.state
+            .as_ref()
+            .and_then(|s| s.result.as_ref())
+            .and_then(|r| r.name.as_deref())
+            .unwrap_or("")
+    }
+}
+
+/// A pipeline (or step) state: a `name` plus an optional terminal `result`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PipelineState {
+    pub name: Option<String>,
+    pub result: Option<PipelineResult>,
+}
+
+/// A pipeline/step terminal result (`{ "name": "SUCCESSFUL" | "FAILED" | ... }`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PipelineResult {
+    pub name: Option<String>,
+}
+
+/// What a pipeline ran against (`{ "ref_name": ..., "commit": { "hash": ... } }`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PipelineTarget {
+    pub ref_name: Option<String>,
+    pub commit: Option<CommitRef>,
+}
+
+/// One step within a pipeline.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PipelineStep {
+    pub uuid: Option<String>,
+    pub name: Option<String>,
+    pub state: Option<PipelineState>,
+}
+
+/// A build status attached to a commit (the closest analog to a PR "check").
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommitStatus {
+    pub key: Option<String>,
+    pub name: Option<String>,
+    /// `SUCCESSFUL` | `FAILED` | `INPROGRESS` | `STOPPED`.
+    pub state: Option<String>,
+    pub url: Option<String>,
+}
+
+impl CommitStatus {
+    /// Whether this status represents a failure.
+    #[must_use]
+    pub fn is_failed(&self) -> bool {
+        self.state.as_deref() == Some("FAILED")
+    }
 }
 
 /// A single link (`{ "href": "..." }`).
