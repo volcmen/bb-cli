@@ -211,7 +211,7 @@ fn parse_error_body(body: &[u8]) -> Option<(String, Vec<ApiErrorItem>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::User;
+    use crate::models::{PullRequest, User};
     use crate::testing::FakeTransport;
 
     #[test]
@@ -239,5 +239,296 @@ mod tests {
         let err = client.get::<User>("/user").unwrap_err();
         assert!(err.is_unauthorized());
         assert_eq!(err.status(), Some(401));
+    }
+
+    // ---- headers ----
+
+    #[test]
+    fn get_sends_accept_and_authorization_headers() {
+        let fake = Arc::new(FakeTransport::new());
+        fake.stub(
+            "GET /user",
+            FakeTransport::rest(Method::Get, "/2.0/user"),
+            FakeTransport::json(200, r#"{"username":"davidd"}"#),
+        );
+        let client = BitbucketClient::new(fake.clone(), Some("Bearer tok".to_owned()));
+        let _: User = client.get("/user").unwrap();
+
+        let reqs = fake.requests.lock().unwrap();
+        let req = &reqs[0];
+        assert_eq!(
+            req.headers.get("Accept").map(String::as_str),
+            Some("application/json")
+        );
+        assert_eq!(
+            req.headers.get("Authorization").map(String::as_str),
+            Some("Bearer tok")
+        );
+        // GET has no body, so no Content-Type.
+        assert!(!req.headers.contains_key("Content-Type"));
+        assert!(req.body.is_none());
+    }
+
+    #[test]
+    fn unauthenticated_client_omits_authorization() {
+        let fake = Arc::new(FakeTransport::new());
+        fake.stub(
+            "GET /user",
+            FakeTransport::rest(Method::Get, "/2.0/user"),
+            FakeTransport::json(200, r#"{"username":"davidd"}"#),
+        );
+        let client = BitbucketClient::new(fake.clone(), None);
+        let _: User = client.get("/user").unwrap();
+        let reqs = fake.requests.lock().unwrap();
+        assert!(!reqs[0].headers.contains_key("Authorization"));
+    }
+
+    // ---- post: serializes body, sets Content-Type, parses response ----
+
+    #[test]
+    fn post_serializes_json_body_and_parses_response() {
+        let fake = Arc::new(FakeTransport::new());
+        fake.stub(
+            "POST /repositories/.../pullrequests",
+            FakeTransport::rest(Method::Post, "/pullrequests"),
+            FakeTransport::json(201, r#"{"id":7,"title":"Add widget","state":"OPEN"}"#),
+        );
+        let client = BitbucketClient::new(fake.clone(), Some("Bearer t".to_owned()));
+
+        let body = serde_json::json!({
+            "title": "Add widget",
+            "source": { "branch": { "name": "feature/x" } },
+        });
+        let pr: PullRequest = client
+            .post("/repositories/acme/widgets/pullrequests", &body)
+            .unwrap();
+        assert_eq!(pr.id, 7);
+        assert_eq!(pr.title.as_deref(), Some("Add widget"));
+
+        let reqs = fake.requests.lock().unwrap();
+        let req = &reqs[0];
+        assert_eq!(req.method, Method::Post);
+        assert_eq!(
+            req.headers.get("Content-Type").map(String::as_str),
+            Some("application/json")
+        );
+        // The body must be valid JSON carrying our fields.
+        let sent: serde_json::Value =
+            serde_json::from_slice(req.body.as_ref().expect("body present")).unwrap();
+        assert_eq!(sent["title"], "Add widget");
+        assert_eq!(sent["source"]["branch"]["name"], "feature/x");
+    }
+
+    // ---- get_raw: returns the text body verbatim ----
+
+    #[test]
+    fn get_raw_returns_text_body() {
+        let diff = "diff --git a/x b/x\n@@ -1 +1 @@\n-old\n+new\n";
+        let fake = Arc::new(FakeTransport::new());
+        fake.stub(
+            "GET diff",
+            FakeTransport::rest(Method::Get, "/diff"),
+            FakeTransport::text(200, diff),
+        );
+        let client = BitbucketClient::new(fake, None);
+        let got = client.get_raw("/repositories/acme/widgets/diff/1").unwrap();
+        assert_eq!(got, diff);
+    }
+
+    // ---- pagination ----
+
+    #[test]
+    fn paginate_follows_next_across_pages() {
+        let fake = Arc::new(FakeTransport::new());
+        // Page 1 points at an absolute `next` URL; client must follow it verbatim.
+        fake.stub(
+            "page 1",
+            FakeTransport::rest(Method::Get, "/2.0/repositories/acme/widgets/pullrequests"),
+            FakeTransport::json(
+                200,
+                r#"{"values":[{"id":1},{"id":2}],"next":"https://api.bitbucket.org/2.0/repositories/acme/widgets/pullrequests?page=2"}"#,
+            ),
+        );
+        fake.stub(
+            "page 2",
+            FakeTransport::rest(Method::Get, "pullrequests?page=2"),
+            FakeTransport::json(200, r#"{"values":[{"id":3}]}"#),
+        );
+        let client = BitbucketClient::new(fake.clone(), None);
+        let prs: Vec<PullRequest> = client
+            .paginate("/repositories/acme/widgets/pullrequests", None)
+            .unwrap();
+        let ids: Vec<u64> = prs.iter().map(|p| p.id).collect();
+        assert_eq!(ids, vec![1, 2, 3]);
+        assert_eq!(fake.request_count(), 2);
+    }
+
+    #[test]
+    fn paginate_honors_limit_and_stops_early() {
+        let fake = Arc::new(FakeTransport::new());
+        // Only page 1 is stubbed. If the client fetched page 2, the unmatched
+        // first-page `next` would force a request to an unstubbed URL → panic.
+        fake.stub(
+            "page 1",
+            FakeTransport::rest(Method::Get, "/2.0/repositories/acme/widgets/pullrequests"),
+            FakeTransport::json(
+                200,
+                r#"{"values":[{"id":1},{"id":2}],"next":"https://api.bitbucket.org/2.0/x?page=2"}"#,
+            ),
+        );
+        let client = BitbucketClient::new(fake.clone(), None);
+        let prs: Vec<PullRequest> = client
+            .paginate("/repositories/acme/widgets/pullrequests", Some(2))
+            .unwrap();
+        assert_eq!(prs.len(), 2);
+        // Must have stopped after the first page (no second request).
+        assert_eq!(fake.request_count(), 1);
+    }
+
+    #[test]
+    fn paginate_limit_smaller_than_first_page() {
+        let fake = Arc::new(FakeTransport::new());
+        fake.stub(
+            "page 1",
+            FakeTransport::rest(Method::Get, "/2.0/items"),
+            FakeTransport::json(
+                200,
+                r#"{"values":[{"id":1},{"id":2},{"id":3}],"next":"https://api.bitbucket.org/2.0/items?page=2"}"#,
+            ),
+        );
+        let client = BitbucketClient::new(fake.clone(), None);
+        let prs: Vec<PullRequest> = client.paginate("/items", Some(1)).unwrap();
+        assert_eq!(prs.len(), 1);
+        assert_eq!(prs[0].id, 1);
+        assert_eq!(fake.request_count(), 1);
+    }
+
+    #[test]
+    fn paginate_empty_collection() {
+        let fake = Arc::new(FakeTransport::new());
+        fake.stub(
+            "empty",
+            FakeTransport::rest(Method::Get, "/2.0/items"),
+            FakeTransport::json(200, r#"{"values":[]}"#),
+        );
+        let client = BitbucketClient::new(fake, None);
+        let prs: Vec<PullRequest> = client.paginate("/items", None).unwrap();
+        assert!(prs.is_empty());
+    }
+
+    // ---- error mapping across statuses + parsed messages ----
+
+    fn error_body(msg: &str) -> String {
+        format!(r#"{{"type":"error","error":{{"message":"{msg}"}}}}"#)
+    }
+
+    #[test]
+    fn maps_403_with_parsed_message() {
+        let fake = Arc::new(FakeTransport::new());
+        fake.stub(
+            "403",
+            FakeTransport::rest(Method::Get, "/2.0/forbidden"),
+            FakeTransport::json(403, &error_body("forbidden")),
+        );
+        let client = BitbucketClient::new(fake, None);
+        let err = client.get::<User>("/forbidden").unwrap_err();
+        assert_eq!(err.status(), Some(403));
+        assert!(!err.is_unauthorized());
+        assert!(!err.is_not_found());
+        match &err {
+            ApiError::Http { message, .. } => assert_eq!(message, "forbidden"),
+            other => panic!("expected Http error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn maps_404_with_parsed_message_and_is_not_found() {
+        let fake = Arc::new(FakeTransport::new());
+        fake.stub(
+            "404",
+            FakeTransport::rest(Method::Get, "/2.0/missing"),
+            FakeTransport::json(404, &error_body("no such repository")),
+        );
+        let client = BitbucketClient::new(fake, None);
+        let err = client.get::<User>("/missing").unwrap_err();
+        assert_eq!(err.status(), Some(404));
+        assert!(err.is_not_found());
+        match &err {
+            ApiError::Http { message, .. } => assert_eq!(message, "no such repository"),
+            other => panic!("expected Http error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn maps_429_with_parsed_message() {
+        let fake = Arc::new(FakeTransport::new());
+        fake.stub(
+            "429",
+            FakeTransport::rest(Method::Get, "/2.0/limited"),
+            FakeTransport::json(429, &error_body("rate limited")),
+        );
+        let client = BitbucketClient::new(fake, None);
+        let err = client.get::<User>("/limited").unwrap_err();
+        assert_eq!(err.status(), Some(429));
+        match &err {
+            ApiError::Http { message, .. } => assert_eq!(message, "rate limited"),
+            other => panic!("expected Http error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn maps_500_with_parsed_message() {
+        let fake = Arc::new(FakeTransport::new());
+        fake.stub(
+            "500",
+            FakeTransport::rest(Method::Get, "/2.0/boom"),
+            FakeTransport::json(500, &error_body("internal error")),
+        );
+        let client = BitbucketClient::new(fake, None);
+        let err = client.get::<User>("/boom").unwrap_err();
+        assert_eq!(err.status(), Some(500));
+        match &err {
+            ApiError::Http { message, url, .. } => {
+                assert_eq!(message, "internal error");
+                assert!(url.contains("/boom"));
+            }
+            other => panic!("expected Http error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn error_without_envelope_falls_back_to_generic_message() {
+        let fake = Arc::new(FakeTransport::new());
+        fake.stub(
+            "503 no envelope",
+            FakeTransport::rest(Method::Get, "/2.0/down"),
+            // No `error` object — e.g. an HTML/plain body or empty.
+            FakeTransport::text(503, "Service Unavailable"),
+        );
+        let client = BitbucketClient::new(fake, None);
+        let err = client.get::<User>("/down").unwrap_err();
+        assert_eq!(err.status(), Some(503));
+        match &err {
+            ApiError::Http {
+                message, errors, ..
+            } => {
+                assert_eq!(message, "request failed with status 503");
+                assert!(errors.is_empty());
+            }
+            other => panic!("expected Http error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn paginate_surfaces_http_error_on_a_page() {
+        let fake = Arc::new(FakeTransport::new());
+        fake.stub(
+            "page error",
+            FakeTransport::rest(Method::Get, "/2.0/items"),
+            FakeTransport::json(500, &error_body("boom")),
+        );
+        let client = BitbucketClient::new(fake, None);
+        let err = client.paginate::<PullRequest>("/items", None).unwrap_err();
+        assert_eq!(err.status(), Some(500));
     }
 }

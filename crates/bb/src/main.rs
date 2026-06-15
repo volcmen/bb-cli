@@ -1,6 +1,13 @@
 //! `bb` — entry point and exit-code mapping (mirrors `gh`'s `mainRun`/`printError`).
 
+mod auth;
+mod browser;
 mod cli;
+mod commands;
+mod factory;
+mod prompt;
+#[cfg(test)]
+mod testsupport;
 
 use std::process::ExitCode;
 

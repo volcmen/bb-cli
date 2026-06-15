@@ -24,6 +24,26 @@ bb pr create -t "Title" -b "Body"   # open a PR for the current branch
 bb pr list                    # list open PRs for the current repo
 ```
 
+## Authentication
+
+`bb` supports three credential types on Bitbucket Cloud:
+
+- **Atlassian API token** — `bb auth login --auth-type api_token` (username = your account email).
+- **App password** — `bb auth login --auth-type app_password`.
+- **OAuth 2.0** — `bb auth login --web`. Bitbucket ships no public OAuth client, so
+  register a consumer at `https://bitbucket.org/<workspace>/workspace/settings/api`
+  (callback `http://localhost:<port>/callback`) and export `BB_OAUTH_CLIENT_ID` /
+  `BB_OAUTH_CLIENT_SECRET`.
+
+Pipe a token non-interactively with `--with-token`:
+
+```bash
+printf '%s' "$TOKEN" | bb auth login --auth-type api_token --username me@example.com --with-token
+```
+
+Credentials are stored in `~/.config/bb/hosts.toml` (`0600`). `BB_TOKEN` / `BB_HOST`
+override the stored config.
+
 ## Architecture
 
 A Cargo workspace mirroring `gh`'s separation of concerns:
