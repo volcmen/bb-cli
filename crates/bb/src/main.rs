@@ -5,6 +5,7 @@ mod browser;
 mod cli;
 mod commands;
 mod factory;
+mod output;
 mod prompt;
 #[cfg(test)]
 mod testsupport;

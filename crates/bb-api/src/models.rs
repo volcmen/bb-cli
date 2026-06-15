@@ -1,10 +1,10 @@
 //! Typed Bitbucket Cloud API models (the subset needed for Epic 0). These are
 //! deliberately lenient (`Option`-heavy) so partial responses deserialize.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// A Bitbucket user/account.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct User {
     pub account_id: Option<String>,
     pub username: Option<String>,
@@ -25,13 +25,13 @@ impl User {
 }
 
 /// A repository's main branch.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MainBranch {
     pub name: String,
 }
 
 /// A Bitbucket repository.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Repository {
     pub slug: Option<String>,
     pub name: Option<String>,
@@ -43,7 +43,7 @@ pub struct Repository {
 }
 
 /// A repository's `links` (the subset we use: web URL + clone URLs).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RepoLinks {
     pub html: Option<Link>,
     #[serde(default)]
@@ -51,7 +51,7 @@ pub struct RepoLinks {
 }
 
 /// One clone URL entry (`{ "name": "https"|"ssh", "href": "..." }`).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CloneLink {
     pub name: Option<String>,
     pub href: String,
@@ -79,14 +79,14 @@ impl Repository {
 }
 
 /// A branch name wrapper (`{ "name": "..." }`).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Branch {
     pub name: String,
 }
 
 /// A PR source/destination endpoint
 /// (`{ "branch": { "name": ... }, "repository": { "full_name": ... } }`).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BranchRef {
     pub branch: Option<Branch>,
     pub repository: Option<RepoRef>,
@@ -109,19 +109,19 @@ impl BranchRef {
 }
 
 /// A repository reference embedded in a PR source/destination.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RepoRef {
     pub full_name: Option<String>,
 }
 
 /// A single link (`{ "href": "..." }`).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Link {
     pub href: String,
 }
 
 /// The `links` object (the subset we use).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Links {
     pub html: Option<Link>,
 }
@@ -134,7 +134,7 @@ impl Links {
 }
 
 /// A pull request.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PullRequest {
     pub id: u64,
     pub title: Option<String>,
@@ -156,13 +156,13 @@ pub struct PullRequest {
 }
 
 /// Rendered content (e.g. `summary.raw`).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Rendered {
     pub raw: Option<String>,
 }
 
 /// A PR participant with their approval state.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Participant {
     pub user: Option<User>,
     pub role: Option<String>,

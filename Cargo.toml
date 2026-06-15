@@ -44,6 +44,10 @@ which = "7"
 url = "2"
 regex = "1"
 terminal_size = "0.4"
+# pure-Rust jq (jaq 3.x line): load/Compiler/Ctx + jaq-json::Val
+jaq-core = "3.1.0"
+jaq-std = "3.0.1"
+jaq-json = "2.0.1"
 
 # dev
 assert_cmd = "2"
