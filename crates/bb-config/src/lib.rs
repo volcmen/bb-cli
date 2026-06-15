@@ -112,6 +112,11 @@ impl ConfigProvider for FileConfig {
     }
 
     fn save(&self) -> Result<(), ConfigError> {
+        if self.dir.as_os_str().is_empty() {
+            return Err(ConfigError::Io(
+                "cannot save a blank in-memory config (no directory)".to_owned(),
+            ));
+        }
         let s = self.lock();
         std::fs::create_dir_all(&self.dir).map_err(|e| ConfigError::Io(e.to_string()))?;
 
@@ -129,15 +134,34 @@ impl ConfigProvider for FileConfig {
     }
 }
 
+/// A process-env getter: returns `Some(value)` only for set, non-empty vars.
+type EnvGetter = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
 /// Decorates a provider so `BB_TOKEN` / `BB_HOST` env vars take precedence.
 pub struct EnvConfig {
     inner: Arc<dyn ConfigProvider>,
+    /// How env vars are read. Defaults to the real process environment
+    /// ([`nonempty_env`]); tests inject a fake to avoid process-global env
+    /// races under parallel threads.
+    env: EnvGetter,
 }
 
 impl EnvConfig {
     #[must_use]
     pub fn new(inner: Arc<dyn ConfigProvider>) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            env: Arc::new(|k: &str| nonempty_env(k)),
+        }
+    }
+
+    /// Like [`EnvConfig::new`], but with an injected env getter (tests). The
+    /// getter must return `None` for unset *or empty* values to match the real
+    /// [`nonempty_env`] semantics.
+    #[cfg(test)]
+    #[must_use]
+    fn with_env_getter(inner: Arc<dyn ConfigProvider>, env: EnvGetter) -> Self {
+        Self { inner, env }
     }
 }
 
@@ -159,11 +183,11 @@ impl ConfigProvider for EnvConfig {
     }
 
     fn default_host(&self) -> String {
-        nonempty_env("BB_HOST").unwrap_or_else(|| self.inner.default_host())
+        (self.env)("BB_HOST").unwrap_or_else(|| self.inner.default_host())
     }
 
     fn auth_token(&self, host: &str) -> Option<String> {
-        nonempty_env("BB_TOKEN").or_else(|| self.inner.auth_token(host))
+        (self.env)("BB_TOKEN").or_else(|| self.inner.auth_token(host))
     }
 
     fn hosts(&self) -> Vec<String> {
@@ -186,14 +210,24 @@ pub fn load() -> Result<Arc<dyn ConfigProvider>, ConfigError> {
 }
 
 fn config_dir() -> Result<PathBuf, ConfigError> {
-    if let Some(d) = nonempty_env("BB_CONFIG_DIR") {
+    config_dir_from(nonempty_env)
+}
+
+/// Resolve the config dir from an injected env getter, with the precedence
+/// `BB_CONFIG_DIR` → `$XDG_CONFIG_HOME/bb` → `$HOME/.config/bb`.
+///
+/// The getter is expected to return `None` for unset *or empty* values (the
+/// real getter, [`nonempty_env`], does this). Factoring the resolution behind a
+/// getter lets tests exercise precedence deterministically without mutating the
+/// process-global environment, which races under parallel test threads.
+fn config_dir_from(get: impl Fn(&str) -> Option<String>) -> Result<PathBuf, ConfigError> {
+    if let Some(d) = get("BB_CONFIG_DIR") {
         return Ok(PathBuf::from(d));
     }
-    if let Some(d) = nonempty_env("XDG_CONFIG_HOME") {
+    if let Some(d) = get("XDG_CONFIG_HOME") {
         return Ok(PathBuf::from(d).join("bb"));
     }
-    let home =
-        std::env::var_os("HOME").ok_or_else(|| ConfigError::Io("$HOME is not set".to_owned()))?;
+    let home = get("HOME").ok_or_else(|| ConfigError::Io("$HOME is not set".to_owned()))?;
     Ok(PathBuf::from(home).join(".config").join("bb"))
 }
 
@@ -228,6 +262,22 @@ fn set_owner_only(_path: &Path) -> Result<(), ConfigError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
+    /// Build an env getter from a fixed table, mirroring `nonempty_env`
+    /// semantics (empty string ⇒ `None`).
+    fn fake_env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let map: HashMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect();
+        move |k: &str| map.get(k).filter(|v| !v.is_empty()).cloned()
+    }
+
+    fn env_arc(pairs: &[(&str, &str)]) -> EnvGetter {
+        let getter = fake_env(pairs);
+        Arc::new(move |k: &str| getter(k))
+    }
 
     #[test]
     fn round_trips_a_host_entry() {
@@ -268,5 +318,212 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    // ---- config_dir precedence (via the injected getter) ----
+
+    #[test]
+    fn config_dir_prefers_bb_config_dir() {
+        let dir = config_dir_from(fake_env(&[
+            ("BB_CONFIG_DIR", "/explicit/cfg"),
+            ("XDG_CONFIG_HOME", "/xdg"),
+            ("HOME", "/home/me"),
+        ]))
+        .unwrap();
+        assert_eq!(dir, PathBuf::from("/explicit/cfg"));
+    }
+
+    #[test]
+    fn config_dir_falls_back_to_xdg() {
+        let dir = config_dir_from(fake_env(&[
+            ("XDG_CONFIG_HOME", "/xdg"),
+            ("HOME", "/home/me"),
+        ]))
+        .unwrap();
+        assert_eq!(dir, PathBuf::from("/xdg").join("bb"));
+    }
+
+    #[test]
+    fn config_dir_falls_back_to_home() {
+        let dir = config_dir_from(fake_env(&[("HOME", "/home/me")])).unwrap();
+        assert_eq!(dir, PathBuf::from("/home/me").join(".config").join("bb"));
+    }
+
+    #[test]
+    fn config_dir_errors_without_home() {
+        let err = config_dir_from(fake_env(&[])).unwrap_err();
+        assert!(matches!(err, ConfigError::Io(_)));
+    }
+
+    #[test]
+    fn config_dir_treats_empty_vars_as_unset() {
+        // Empty BB_CONFIG_DIR / XDG_CONFIG_HOME must not win.
+        let dir = config_dir_from(fake_env(&[
+            ("BB_CONFIG_DIR", ""),
+            ("XDG_CONFIG_HOME", ""),
+            ("HOME", "/home/me"),
+        ]))
+        .unwrap();
+        assert_eq!(dir, PathBuf::from("/home/me").join(".config").join("bb"));
+    }
+
+    // ---- EnvConfig overrides (via the injected getter, no real env) ----
+
+    #[test]
+    fn env_config_bb_token_overrides_inner() {
+        let inner = FileConfig::blank();
+        inner.set("bitbucket.org", "token", "file-token").unwrap();
+        let cfg =
+            EnvConfig::with_env_getter(Arc::new(inner), env_arc(&[("BB_TOKEN", "env-token")]));
+        assert_eq!(
+            cfg.auth_token("bitbucket.org").as_deref(),
+            Some("env-token")
+        );
+    }
+
+    #[test]
+    fn env_config_bb_token_unset_falls_back_to_inner() {
+        let inner = FileConfig::blank();
+        inner.set("bitbucket.org", "token", "file-token").unwrap();
+        let cfg = EnvConfig::with_env_getter(Arc::new(inner), env_arc(&[]));
+        assert_eq!(
+            cfg.auth_token("bitbucket.org").as_deref(),
+            Some("file-token")
+        );
+    }
+
+    #[test]
+    fn env_config_empty_bb_token_falls_back_to_inner() {
+        let inner = FileConfig::blank();
+        inner.set("bitbucket.org", "token", "file-token").unwrap();
+        let cfg = EnvConfig::with_env_getter(Arc::new(inner), env_arc(&[("BB_TOKEN", "")]));
+        assert_eq!(
+            cfg.auth_token("bitbucket.org").as_deref(),
+            Some("file-token")
+        );
+    }
+
+    #[test]
+    fn env_config_bb_host_overrides_default_host() {
+        let inner = FileConfig::blank();
+        inner
+            .set("", "default_host", "configured.example.com")
+            .unwrap();
+        let cfg =
+            EnvConfig::with_env_getter(Arc::new(inner), env_arc(&[("BB_HOST", "env.example.com")]));
+        assert_eq!(cfg.default_host(), "env.example.com");
+    }
+
+    #[test]
+    fn env_config_bb_host_unset_falls_back_to_inner_then_default() {
+        let inner = FileConfig::blank();
+        let cfg = EnvConfig::with_env_getter(Arc::new(inner), env_arc(&[]));
+        assert_eq!(cfg.default_host(), DEFAULT_HOST);
+
+        let inner2 = FileConfig::blank();
+        inner2
+            .set("", "default_host", "configured.example.com")
+            .unwrap();
+        let cfg2 = EnvConfig::with_env_getter(Arc::new(inner2), env_arc(&[]));
+        assert_eq!(cfg2.default_host(), "configured.example.com");
+    }
+
+    #[test]
+    fn env_config_real_constructor_delegates_when_no_env() {
+        // The public `new` reads the real env; in a clean test process neither
+        // BB_TOKEN nor BB_HOST is set, so it must delegate to the inner config.
+        // (Guarded so it stays correct even if the harness sets them.)
+        if nonempty_env("BB_HOST").is_none() {
+            let inner = FileConfig::blank();
+            let cfg = EnvConfig::new(Arc::new(inner));
+            assert_eq!(cfg.default_host(), DEFAULT_HOST);
+        }
+    }
+
+    // ---- dotted host keys, multiple hosts, removal, missing lookups ----
+
+    #[test]
+    fn dotted_host_key_round_trips_through_toml() {
+        // "bitbucket.org" contains a dot, which TOML must quote as a table key.
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = FileConfig::load_from(dir.path().to_path_buf()).unwrap();
+        cfg.set("bitbucket.org", "token", "t").unwrap();
+        cfg.set("bitbucket.org", "username", "davidd").unwrap();
+        cfg.save().unwrap();
+
+        // The on-disk file must quote the dotted table header.
+        let raw = std::fs::read_to_string(dir.path().join("hosts.toml")).unwrap();
+        assert!(
+            raw.contains("[\"bitbucket.org\"]"),
+            "expected quoted dotted table header, got: {raw}"
+        );
+
+        let reloaded = FileConfig::load_from(dir.path().to_path_buf()).unwrap();
+        assert_eq!(reloaded.get("bitbucket.org", "token").as_deref(), Some("t"));
+        assert_eq!(
+            reloaded.get("bitbucket.org", "username").as_deref(),
+            Some("davidd")
+        );
+    }
+
+    #[test]
+    fn multiple_hosts_round_trip_and_are_isolated() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = FileConfig::load_from(dir.path().to_path_buf()).unwrap();
+        cfg.set("bitbucket.org", "token", "cloud").unwrap();
+        cfg.set("bb.acme.com", "token", "datacenter").unwrap();
+        cfg.save().unwrap();
+
+        let reloaded = FileConfig::load_from(dir.path().to_path_buf()).unwrap();
+        let mut hosts = reloaded.hosts();
+        hosts.sort();
+        assert_eq!(
+            hosts,
+            vec!["bb.acme.com".to_owned(), "bitbucket.org".to_owned()]
+        );
+        assert_eq!(
+            reloaded.auth_token("bitbucket.org").as_deref(),
+            Some("cloud")
+        );
+        assert_eq!(
+            reloaded.auth_token("bb.acme.com").as_deref(),
+            Some("datacenter")
+        );
+    }
+
+    #[test]
+    fn unset_host_removes_only_that_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = FileConfig::load_from(dir.path().to_path_buf()).unwrap();
+        cfg.set("bitbucket.org", "token", "cloud").unwrap();
+        cfg.set("bb.acme.com", "token", "datacenter").unwrap();
+
+        cfg.unset_host("bitbucket.org").unwrap();
+        assert_eq!(cfg.hosts(), vec!["bb.acme.com".to_owned()]);
+        assert!(cfg.auth_token("bitbucket.org").is_none());
+        assert_eq!(cfg.auth_token("bb.acme.com").as_deref(), Some("datacenter"));
+
+        // Persists across save/reload.
+        cfg.save().unwrap();
+        let reloaded = FileConfig::load_from(dir.path().to_path_buf()).unwrap();
+        assert_eq!(reloaded.hosts(), vec!["bb.acme.com".to_owned()]);
+    }
+
+    #[test]
+    fn get_on_missing_host_or_key_is_none() {
+        let cfg = FileConfig::blank();
+        cfg.set("bitbucket.org", "token", "t").unwrap();
+        assert!(cfg.get("nope.example.com", "token").is_none());
+        assert!(cfg.get("bitbucket.org", "missing_key").is_none());
+        assert!(cfg.auth_token("nope.example.com").is_none());
+    }
+
+    #[test]
+    fn global_keys_use_empty_host() {
+        let cfg = FileConfig::blank();
+        cfg.set("", "git_protocol", "ssh").unwrap();
+        assert_eq!(cfg.get("", "git_protocol").as_deref(), Some("ssh"));
+        // A host lookup must not see the global value.
+        assert!(cfg.get("bitbucket.org", "git_protocol").is_none());
     }
 }

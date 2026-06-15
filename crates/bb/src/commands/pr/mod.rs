@@ -2,6 +2,7 @@
 
 mod create;
 mod list;
+mod render;
 
 use bb_core::Context;
 use clap::{Args, Subcommand};

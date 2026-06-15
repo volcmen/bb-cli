@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use bb_core::{
-    Browser, ConfigProvider, Context, GitClient, IoStreams, Prompter, PromptError, TestBuffers,
+    Browser, ConfigProvider, Context, GitClient, IoStreams, PromptError, Prompter, TestBuffers,
     Transport,
 };
 

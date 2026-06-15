@@ -26,7 +26,12 @@ pub const VERSION: &str = concat!(
 )]
 pub struct Cli {
     /// Select another repository as `WORKSPACE/SLUG`
-    #[arg(short = 'R', long = "repo", global = true, value_name = "WORKSPACE/SLUG")]
+    #[arg(
+        short = 'R',
+        long = "repo",
+        global = true,
+        value_name = "WORKSPACE/SLUG"
+    )]
     repo: Option<String>,
 
     #[command(subcommand)]

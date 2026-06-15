@@ -14,6 +14,9 @@ impl Browser for SystemBrowser {
         } else {
             ("xdg-open", vec![url])
         };
-        std::process::Command::new(program).args(args).status().map(|_| ())
+        std::process::Command::new(program)
+            .args(args)
+            .status()
+            .map(|_| ())
     }
 }

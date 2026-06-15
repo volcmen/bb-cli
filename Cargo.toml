@@ -39,6 +39,7 @@ reqwest = { version = "0.12", default-features = false, features = [
 inquire = { version = "0.7", features = ["editor"] }
 etcetera = "0.8"
 base64 = "0.22"
+getrandom = "0.2"
 which = "7"
 url = "2"
 regex = "1"

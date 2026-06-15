@@ -112,6 +112,7 @@ dependencies = [
  "bb-core",
  "bb-git",
  "clap",
+ "getrandom 0.2.17",
  "inquire",
  "predicates",
  "serde",

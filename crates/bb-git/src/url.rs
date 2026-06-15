@@ -55,7 +55,10 @@ fn strip_userinfo(rest: &str) -> &str {
 
 fn is_bitbucket_host(host: &str) -> bool {
     let h = host.to_ascii_lowercase();
-    h == "bitbucket.org" || h.contains("bitbucket")
+    // Cloud only for now (Data Center hosts are handled in a later epic). Exact
+    // match or a subdomain of bitbucket.org — not a loose `contains`, so hosts
+    // like `evil-bitbucket.example.com` are rejected.
+    h == "bitbucket.org" || h.ends_with(".bitbucket.org")
 }
 
 #[cfg(test)]
@@ -91,5 +94,83 @@ mod tests {
     #[test]
     fn rejects_non_bitbucket() {
         assert!(parse_remote_url("git@github.com:acme/widgets.git").is_none());
+    }
+
+    #[test]
+    fn parses_scp_ws_slug() {
+        let r = parse_remote_url("git@bitbucket.org:ws/slug.git").unwrap();
+        assert_eq!(r.host(), "bitbucket.org");
+        assert_eq!(r.workspace(), "ws");
+        assert_eq!(r.slug(), "slug");
+    }
+
+    #[test]
+    fn parses_ssh_scheme_with_custom_port() {
+        // Data-Center-style port (7999) must be stripped from the host.
+        let r = parse_remote_url("ssh://git@bitbucket.org:7999/ws/slug.git").unwrap();
+        assert_eq!(r.host(), "bitbucket.org");
+        assert_eq!(r.full_name(), "ws/slug");
+    }
+
+    #[test]
+    fn parses_https_user_ws_slug() {
+        let r = parse_remote_url("https://user@bitbucket.org/ws/slug.git").unwrap();
+        assert_eq!(r.host(), "bitbucket.org");
+        assert_eq!(r.full_name(), "ws/slug");
+    }
+
+    #[test]
+    fn parses_https_without_git_suffix() {
+        let r = parse_remote_url("https://bitbucket.org/ws/slug").unwrap();
+        assert_eq!(r.full_name(), "ws/slug");
+    }
+
+    #[test]
+    fn parses_with_trailing_slash() {
+        let r = parse_remote_url("https://bitbucket.org/ws/slug/").unwrap();
+        assert_eq!(r.full_name(), "ws/slug");
+    }
+
+    #[test]
+    fn parses_with_trailing_slash_and_git_suffix() {
+        // `.git/` (trailing slash after the suffix) must still parse.
+        let r = parse_remote_url("https://bitbucket.org/ws/slug.git/").unwrap();
+        assert_eq!(r.full_name(), "ws/slug");
+    }
+
+    #[test]
+    fn host_match_is_case_insensitive() {
+        let r = parse_remote_url("git@BitBucket.ORG:ws/slug.git").unwrap();
+        // Host is preserved verbatim (the binary lowercases where needed);
+        // the important contract is that it parses at all.
+        assert_eq!(r.full_name(), "ws/slug");
+    }
+
+    #[test]
+    fn rejects_non_bitbucket_https() {
+        assert!(parse_remote_url("https://github.com/ws/slug.git").is_none());
+        assert!(parse_remote_url("ssh://git@gitlab.com/ws/slug.git").is_none());
+    }
+
+    #[test]
+    fn rejects_garbage() {
+        assert!(parse_remote_url("").is_none());
+        assert!(parse_remote_url("not a url").is_none());
+        assert!(parse_remote_url("ftp://bitbucket.org/ws/slug").is_none());
+        assert!(parse_remote_url(":::::").is_none());
+    }
+
+    #[test]
+    fn rejects_missing_slug() {
+        // Workspace present but no slug.
+        assert!(parse_remote_url("git@bitbucket.org:ws.git").is_none());
+        assert!(parse_remote_url("https://bitbucket.org/ws").is_none());
+        assert!(parse_remote_url("https://bitbucket.org/").is_none());
+    }
+
+    #[test]
+    fn trims_surrounding_whitespace() {
+        let r = parse_remote_url("  git@bitbucket.org:ws/slug.git\n").unwrap();
+        assert_eq!(r.full_name(), "ws/slug");
     }
 }

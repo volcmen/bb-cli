@@ -1,14 +1,15 @@
 //! The real [`Prompter`] implementation, backed by `inquire`.
 
-use bb_core::{Prompter, PromptError};
+use bb_core::{PromptError, Prompter};
 
 /// Interactive prompts via `inquire`.
 pub struct InquirePrompter;
 
 fn map_err(e: inquire::InquireError) -> PromptError {
     match e {
-        inquire::InquireError::OperationCanceled
-        | inquire::InquireError::OperationInterrupted => PromptError::Cancelled,
+        inquire::InquireError::OperationCanceled | inquire::InquireError::OperationInterrupted => {
+            PromptError::Cancelled
+        }
         other => PromptError::Other(other.to_string()),
     }
 }

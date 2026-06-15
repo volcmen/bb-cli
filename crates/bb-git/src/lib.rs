@@ -144,4 +144,152 @@ mod tests {
         let git = ShellGit::new(stub);
         assert_eq!(git.current_branch().unwrap(), "feature/x");
     }
+
+    #[test]
+    fn current_branch_trims_surrounding_whitespace() {
+        let stub = Arc::new(StubRunner::new());
+        stub.register(r"rev-parse --abbrev-ref HEAD", 0, "  main \n");
+        let git = ShellGit::new(stub);
+        assert_eq!(git.current_branch().unwrap(), "main");
+    }
+
+    #[test]
+    fn remotes_dedup_fetch_and_push_into_one() {
+        let stub = Arc::new(StubRunner::new());
+        // origin appears twice (fetch + push) — must collapse to a single Remote.
+        stub.register(
+            r"^git remote -v$",
+            0,
+            "origin\tgit@bitbucket.org:acme/widgets.git (fetch)\n\
+             origin\tgit@bitbucket.org:acme/widgets.git (push)\n",
+        );
+        let git = ShellGit::new(stub);
+        let remotes = git.remotes().unwrap();
+        assert_eq!(remotes.len(), 1);
+        assert_eq!(remotes[0].name, "origin");
+        assert_eq!(remotes[0].repo.full_name(), "acme/widgets");
+    }
+
+    #[test]
+    fn remotes_priority_sorts_origin_upstream_other() {
+        let stub = Arc::new(StubRunner::new());
+        // Registered out of priority order; result must be origin < upstream < other.
+        stub.register(
+            r"^git remote -v$",
+            0,
+            "fork\tgit@bitbucket.org:me/widgets.git (fetch)\n\
+             upstream\tgit@bitbucket.org:acme/widgets.git (fetch)\n\
+             origin\tgit@bitbucket.org:team/widgets.git (fetch)\n",
+        );
+        let git = ShellGit::new(stub);
+        let names: Vec<String> = git.remotes().unwrap().into_iter().map(|r| r.name).collect();
+        assert_eq!(names, vec!["origin", "upstream", "fork"]);
+    }
+
+    #[test]
+    fn remotes_skip_non_bitbucket() {
+        let stub = Arc::new(StubRunner::new());
+        stub.register(
+            r"^git remote -v$",
+            0,
+            "gh\tgit@github.com:acme/widgets.git (fetch)\n\
+             gh\tgit@github.com:acme/widgets.git (push)\n\
+             origin\tgit@bitbucket.org:acme/widgets.git (fetch)\n\
+             origin\tgit@bitbucket.org:acme/widgets.git (push)\n",
+        );
+        let git = ShellGit::new(stub);
+        let remotes = git.remotes().unwrap();
+        assert_eq!(remotes.len(), 1);
+        assert_eq!(remotes[0].name, "origin");
+    }
+
+    #[test]
+    fn remotes_empty_output_is_empty_vec() {
+        let stub = Arc::new(StubRunner::new());
+        stub.register(r"^git remote -v$", 0, "");
+        let git = ShellGit::new(stub);
+        assert!(git.remotes().unwrap().is_empty());
+    }
+
+    #[test]
+    fn remotes_propagates_command_failure() {
+        let stub = Arc::new(StubRunner::new());
+        stub.register(r"^git remote -v$", 128, "");
+        let git = ShellGit::new(stub);
+        let err = git.remotes().unwrap_err();
+        assert!(matches!(err, GitError::Command { code: 128, .. }));
+    }
+
+    #[test]
+    fn commits_between_parses_sha_and_title() {
+        let stub = Arc::new(StubRunner::new());
+        // git log emits "%H\x1f%s" per line, newest first.
+        stub.register(
+            r"^git log",
+            0,
+            "abc123\u{1f}Add feature\ndef456\u{1f}Fix bug\n",
+        );
+        let git = ShellGit::new(stub);
+        let commits = git.commits_between("main", "feature/x").unwrap();
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].sha, "abc123");
+        assert_eq!(commits[0].title, "Add feature");
+        assert_eq!(commits[1].sha, "def456");
+        assert_eq!(commits[1].title, "Fix bug");
+    }
+
+    #[test]
+    fn commits_between_handles_empty() {
+        let stub = Arc::new(StubRunner::new());
+        stub.register(r"^git log", 0, "");
+        let git = ShellGit::new(stub);
+        assert!(git.commits_between("main", "main").unwrap().is_empty());
+    }
+
+    #[test]
+    fn commits_between_skips_malformed_lines() {
+        let stub = Arc::new(StubRunner::new());
+        // A line without the \x1f separator must be skipped, not panic.
+        stub.register(
+            r"^git log",
+            0,
+            "abc123\u{1f}Good\nno-separator-here\ndef456\u{1f}Also good\n",
+        );
+        let git = ShellGit::new(stub);
+        let commits = git.commits_between("main", "head").unwrap();
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].title, "Good");
+        assert_eq!(commits[1].title, "Also good");
+    }
+
+    #[test]
+    fn commits_between_preserves_titles_with_special_chars() {
+        let stub = Arc::new(StubRunner::new());
+        stub.register(
+            r"^git log",
+            0,
+            "abc123\u{1f}feat: add x (with: colons, commas)\n",
+        );
+        let git = ShellGit::new(stub);
+        let commits = git.commits_between("main", "head").unwrap();
+        assert_eq!(commits[0].title, "feat: add x (with: colons, commas)");
+    }
+
+    #[test]
+    fn push_issues_set_upstream_args() {
+        let stub = Arc::new(StubRunner::new());
+        // Assert the exact argument shape: push --set-upstream <remote> <refspec>.
+        stub.register(r"^git push --set-upstream origin feature/x$", 0, "");
+        let git = ShellGit::new(stub);
+        git.push("origin", "feature/x").unwrap();
+    }
+
+    #[test]
+    fn push_propagates_command_failure() {
+        let stub = Arc::new(StubRunner::new());
+        stub.register(r"^git push --set-upstream origin feature/x$", 1, "");
+        let git = ShellGit::new(stub);
+        let err = git.push("origin", "feature/x").unwrap_err();
+        assert!(matches!(err, GitError::Command { code: 1, .. }));
+    }
 }
