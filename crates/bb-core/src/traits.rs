@@ -43,6 +43,8 @@ pub trait GitClient: Send + Sync {
     fn checkout(&self, branch: &str) -> Result<(), GitError>;
     /// `git remote add <name> <url>`.
     fn add_remote(&self, name: &str, url: &str) -> Result<(), GitError>;
+    /// `git clone <url> [dir]`.
+    fn clone_repo(&self, url: &str, dir: Option<&str>) -> Result<(), GitError>;
 }
 
 /// Interactive prompt seam. The real impl uses `inquire`; tests use a scripted

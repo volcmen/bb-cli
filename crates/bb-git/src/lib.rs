@@ -123,6 +123,16 @@ impl GitClient for ShellGit {
     fn add_remote(&self, name: &str, url: &str) -> Result<(), GitError> {
         self.run(&["remote", "add", name, url]).map(|_| ())
     }
+
+    fn clone_repo(&self, url: &str, dir: Option<&str>) -> Result<(), GitError> {
+        // `--` stops git option parsing so a url/dir starting with `-` can't be
+        // interpreted as a flag (e.g. `--upload-pack=...`).
+        let mut args = vec!["clone", "--", url];
+        if let Some(d) = dir {
+            args.push(d);
+        }
+        self.run(&args).map(|_| ())
+    }
 }
 
 #[cfg(test)]
