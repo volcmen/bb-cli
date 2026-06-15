@@ -1,6 +1,7 @@
 //! `bb issue comment`.
 
-use bb_core::Context;
+use bb_api::BitbucketClient;
+use bb_core::{AuthError, Context, FlagError};
 use clap::Args;
 
 #[derive(Args, Debug)]
@@ -16,10 +17,243 @@ pub struct CommentArgs {
     pub body_file: Option<String>,
 }
 
+// ----- request body shapes ----------------------------------------------
+
+/// A `{ "raw": ... }` content wrapper, matching Bitbucket's rendered-content shape.
+#[derive(serde::Serialize)]
+struct Content<'a> {
+    raw: &'a str,
+}
+
+/// The JSON body sent to `POST .../issues/{id}/comments`.
+#[derive(serde::Serialize)]
+struct CommentBody<'a> {
+    content: Content<'a>,
+}
+
 /// Run `bb issue comment`.
 ///
 /// # Errors
-/// TODO(#38): implement.
-pub fn run(_ctx: &Context, _args: CommentArgs) -> anyhow::Result<()> {
-    anyhow::bail!("`bb issue comment` is not implemented yet (#38)")
+/// Returns [`AuthError`] (exit 4) when not authenticated, [`FlagError`] for an
+/// invalid issue id or a missing body when non-interactive, and propagates
+/// [`ApiError`](bb_core::ApiError) / IO errors.
+pub fn run(ctx: &Context, args: CommentArgs) -> anyhow::Result<()> {
+    let repo = ctx.base_repo()?;
+    let host = repo.host().to_owned();
+
+    let Some(header) = crate::auth::header_for(ctx.config.as_ref(), &host) else {
+        return Err(AuthError::new(host).into());
+    };
+    let client = BitbucketClient::new(ctx.transport.clone(), Some(header));
+
+    let id: u64 = args
+        .id
+        .parse()
+        .map_err(|_| FlagError::new("invalid issue id"))?;
+
+    // body: --body, else --body-file (`-` => stdin), else editor when
+    // interactive, else FlagError.
+    let body = resolve_body(ctx, &args)?;
+
+    let payload = CommentBody {
+        content: Content { raw: &body },
+    };
+
+    let path = format!(
+        "/repositories/{}/{}/issues/{id}/comments",
+        repo.workspace(),
+        repo.slug()
+    );
+    // Comment response shape is loose; we don't need any of its fields.
+    let _resp: serde_json::Value = client.post(&path, &payload)?;
+
+    ctx.io.println(&format!("✓ Commented on issue #{id}"));
+    Ok(())
+}
+
+/// Resolve the comment body from `--body`, then `--body-file` (`-` => stdin),
+/// else an editor prompt when interactive, else a [`FlagError`].
+fn resolve_body(ctx: &Context, args: &CommentArgs) -> anyhow::Result<String> {
+    if let Some(b) = &args.body {
+        return Ok(b.clone());
+    }
+    if let Some(file) = &args.body_file {
+        if file == "-" {
+            return Ok(ctx.io.read_stdin_to_string()?);
+        }
+        return Ok(std::fs::read_to_string(file)?);
+    }
+    if ctx.io.can_prompt() {
+        return ctx.prompter.editor("Comment", "").map_err(to_anyhow);
+    }
+    Err(FlagError::new("--body required when not running interactively").into())
+}
+
+fn to_anyhow(err: bb_core::PromptError) -> anyhow::Error {
+    match err {
+        bb_core::PromptError::Cancelled => bb_core::CancelError.into(),
+        other => anyhow::anyhow!(other),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use bb_api::testing::FakeTransport;
+    use bb_config::FileConfig;
+    use bb_core::{ConfigProvider, GitClient, IoStreams, Method, Prompter, RepoId, Transport};
+    use bb_git::{ShellGit, StubRunner};
+
+    use super::*;
+    use crate::testsupport::{test_context, RecordingBrowser, ScriptedPrompter};
+
+    const HOST: &str = "bitbucket.org";
+
+    fn authed_config() -> Arc<dyn ConfigProvider> {
+        let cfg = FileConfig::blank();
+        cfg.set(HOST, "auth_type", "app_password").unwrap();
+        cfg.set(HOST, "username", "u").unwrap();
+        cfg.set(HOST, "token", "t").unwrap();
+        Arc::new(cfg)
+    }
+
+    /// Non-interactive context (`tty=false`, `can_prompt()` is false).
+    fn ctx_with(
+        http: Arc<FakeTransport>,
+        config: Arc<dyn ConfigProvider>,
+        prompter: Arc<dyn Prompter>,
+    ) -> (Context, bb_core::TestBuffers) {
+        let git: Arc<dyn GitClient> = Arc::new(ShellGit::new(Arc::new(StubRunner::new())));
+        let transport: Arc<dyn Transport> = http;
+        let (mut ctx, bufs) = test_context(transport, git, config, prompter, false);
+        ctx.repo_override = Some(RepoId::new("acme", "widgets"));
+        (ctx, bufs)
+    }
+
+    /// Interactive context where `can_prompt()` is true. `test_context` leaves
+    /// `never_prompt` set, so build the context directly (mirrors `auth login`).
+    fn interactive_ctx(
+        http: Arc<FakeTransport>,
+        config: Arc<dyn ConfigProvider>,
+        prompter: Arc<dyn Prompter>,
+    ) -> (Context, bb_core::TestBuffers) {
+        let (mut io, bufs) = IoStreams::test();
+        io.set_stdout_tty(true);
+        io.set_stderr_tty(true);
+        io.set_stdin_tty(true);
+        io.set_never_prompt(false);
+        let git: Arc<dyn GitClient> = Arc::new(ShellGit::new(Arc::new(StubRunner::new())));
+        let ctx = Context {
+            io: Arc::new(io),
+            prompter,
+            browser: Arc::new(RecordingBrowser::default()),
+            git,
+            config,
+            transport: http,
+            app_version: "test".to_owned(),
+            repo_override: Some(RepoId::new("acme", "widgets")),
+        };
+        (ctx, bufs)
+    }
+
+    #[test]
+    fn comment_happy_posts_content_and_prints_confirmation() {
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "post comment",
+            FakeTransport::rest(Method::Post, "/repositories/acme/widgets/issues/7/comments"),
+            FakeTransport::json(201, r#"{"id": 100, "content": {"raw": "thanks"}}"#),
+        );
+        let (ctx, bufs) = ctx_with(
+            h.clone(),
+            authed_config(),
+            Arc::new(ScriptedPrompter::new()),
+        );
+
+        let a = CommentArgs {
+            id: "7".to_owned(),
+            body: Some("thanks".to_owned()),
+            body_file: None,
+        };
+        run(&ctx, a).unwrap();
+
+        let out = bufs.stdout_string();
+        assert!(out.contains("✓ Commented on issue #7"), "out: {out}");
+
+        let reqs = h.requests.lock().unwrap();
+        let post = reqs
+            .iter()
+            .find(|r| r.method == Method::Post)
+            .expect("a POST");
+        let body: serde_json::Value =
+            serde_json::from_slice(post.body.as_deref().unwrap()).unwrap();
+        assert_eq!(body["content"]["raw"], "thanks");
+    }
+
+    #[test]
+    fn comment_prompts_editor_when_interactive() {
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "post comment",
+            FakeTransport::rest(Method::Post, "/repositories/acme/widgets/issues/3/comments"),
+            FakeTransport::json(201, r#"{"id": 1}"#),
+        );
+        let prompter = Arc::new(ScriptedPrompter::new().editor("from editor"));
+        let (ctx, bufs) = interactive_ctx(h.clone(), authed_config(), prompter);
+
+        let a = CommentArgs {
+            id: "3".to_owned(),
+            body: None,
+            body_file: None,
+        };
+        run(&ctx, a).unwrap();
+
+        assert!(bufs.stdout_string().contains("✓ Commented on issue #3"));
+        let reqs = h.requests.lock().unwrap();
+        let post = reqs.iter().find(|r| r.method == Method::Post).unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(post.body.as_deref().unwrap()).unwrap();
+        assert_eq!(body["content"]["raw"], "from editor");
+    }
+
+    #[test]
+    fn comment_invalid_id_is_flag_error() {
+        let h = Arc::new(FakeTransport::new());
+        let (ctx, _bufs) = ctx_with(
+            h.clone(),
+            authed_config(),
+            Arc::new(ScriptedPrompter::new()),
+        );
+
+        let a = CommentArgs {
+            id: "not-a-number".to_owned(),
+            body: Some("x".to_owned()),
+            body_file: None,
+        };
+        let err = run(&ctx, a).unwrap_err();
+        let flag = err.downcast_ref::<FlagError>().expect("FlagError");
+        assert!(flag.to_string().contains("invalid issue id"), "{flag}");
+    }
+
+    #[test]
+    fn comment_not_authed_returns_auth_error() {
+        let h = Arc::new(FakeTransport::new());
+        let (ctx, _bufs) = ctx_with(
+            h.clone(),
+            Arc::new(FileConfig::blank()),
+            Arc::new(ScriptedPrompter::new()),
+        );
+
+        let a = CommentArgs {
+            id: "7".to_owned(),
+            body: Some("x".to_owned()),
+            body_file: None,
+        };
+        let err = run(&ctx, a).unwrap_err();
+        assert!(
+            err.downcast_ref::<AuthError>().is_some(),
+            "expected AuthError, got: {err:#}"
+        );
+    }
 }
