@@ -6,7 +6,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 
 use crate::commands::{
     api::ApiArgs, auth::AuthArgs, browse::BrowseArgs, completion::CompletionArgs, issue::IssueArgs,
-    pipeline::PipelineArgs, pr::PrArgs, repo::RepoArgs,
+    man::ManArgs, pipeline::PipelineArgs, pr::PrArgs, repo::RepoArgs,
 };
 use crate::factory;
 
@@ -61,6 +61,8 @@ enum Commands {
     Api(ApiArgs),
     /// Generate shell completion scripts
     Completion(CompletionArgs),
+    /// Generate man pages for bb and its subcommands
+    Man(ManArgs),
 }
 
 /// Parse process arguments (auto-exits on `--version`/`--help`/parse errors).
@@ -116,6 +118,11 @@ pub fn dispatch(cli: Cli) -> anyhow::Result<()> {
             let ctx = factory::build_context(repo_override)?;
             crate::commands::completion::run(&ctx, args)
         }
+        Some(Commands::Man(args)) => {
+            let ctx = factory::build_context(repo_override)?;
+            crate::commands::man::run(&ctx, args)
+        }
+
         None => {
             let mut cmd = Cli::command();
             cmd.print_help()?;
@@ -162,6 +169,16 @@ mod tests {
         assert!(
             Cli::try_parse_from(["bb", "completion", "-s", "tcsh"]).is_err(),
             "unknown shell should be a parse error"
+        );
+    }
+
+    /// `man -o <dir>` parses; the output directory is required.
+    #[test]
+    fn man_output_is_required() {
+        Cli::try_parse_from(["bb", "man", "-o", "/tmp/bb-man"]).expect("man -o parses");
+        assert!(
+            Cli::try_parse_from(["bb", "man"]).is_err(),
+            "--output is required"
         );
     }
 }
