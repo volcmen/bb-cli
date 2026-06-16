@@ -113,7 +113,19 @@ fn basic_login(ctx: &Context, host: &str, args: &LoginArgs) -> anyhow::Result<()
     let user: User = match client.get::<User>("/user") {
         Ok(u) => u,
         Err(err) if err.is_unauthorized() => {
-            return Err(FlagError::new(format!("invalid credentials for {host}")).into());
+            // Surface the server's actual message — e.g. an Atlassian API token
+            // without Bitbucket scopes returns "not supported for this endpoint".
+            let detail = match &err {
+                bb_core::ApiError::Http { message, .. } => message.as_str(),
+                _ => "unauthorized",
+            };
+            return Err(FlagError::new(format!(
+                "could not authenticate to {host}: {detail}\n\
+                 hint: for an app password, the username is your Bitbucket username; for an \
+                 Atlassian API token, the username is your account email and the token must be \
+                 created with Bitbucket scopes."
+            ))
+            .into());
         }
         Err(err) => return Err(err.into()),
     };
@@ -149,20 +161,32 @@ fn oauth_login(ctx: &Context, host: &str) -> anyhow::Result<()> {
         .ok()
         .filter(|s| !s.is_empty());
 
+    // Fixed local callback port so the redirect_uri matches the consumer's
+    // registered callback URL (Bitbucket validates the redirect). Override with
+    // BB_OAUTH_PORT if 8765 is taken (and match it in the consumer config).
+    let port: u16 = std::env::var("BB_OAUTH_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8765);
+    let redirect_uri = format!("http://localhost:{port}/callback");
+
     let (Some(client_id), Some(client_secret)) = (client_id, client_secret) else {
-        return Err(FlagError::new(
-            "OAuth login needs an OAuth consumer. Register one at \
-             https://bitbucket.org/<workspace>/workspace/settings/api with callback URL \
-             http://localhost:<port>/callback, then set BB_OAUTH_CLIENT_ID and \
-             BB_OAUTH_CLIENT_SECRET in your environment and re-run with --web.",
-        )
+        return Err(FlagError::new(format!(
+            "OAuth login needs an OAuth consumer. At \
+             https://bitbucket.org/<workspace>/workspace/settings/api add a consumer with \
+             callback URL {redirect_uri} and the scopes you need (account, repository, \
+             pullrequest), enable \"This is a private consumer\", then set BB_OAUTH_CLIENT_ID \
+             and BB_OAUTH_CLIENT_SECRET and re-run `bb auth login --web`.",
+        ))
         .into());
     };
 
-    // Bind an ephemeral local port for the redirect.
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let port = listener.local_addr()?.port();
-    let redirect_uri = format!("http://localhost:{port}/callback");
+    let listener = TcpListener::bind(("127.0.0.1", port)).map_err(|e| {
+        FlagError::new(format!(
+            "could not bind 127.0.0.1:{port} for the OAuth callback ({e}); \
+             set BB_OAUTH_PORT to a free port and use it in the consumer's callback URL."
+        ))
+    })?;
 
     // CSRF protection: a random opaque value echoed back on the callback.
     let state = random_state()?;
@@ -516,7 +540,9 @@ mod tests {
         };
         let err = run(&ctx, a).unwrap_err();
         let flag = err.downcast_ref::<FlagError>().expect("FlagError");
-        assert!(flag.to_string().contains("invalid credentials"));
+        // Surfaces the failure and the server's detail message ("bad").
+        assert!(flag.to_string().contains("could not authenticate"));
+        assert!(flag.to_string().contains("bad"));
         // nothing persisted
         assert!(cfg.get("bitbucket.org", "token").is_none());
         assert!(cfg.hosts().is_empty());
