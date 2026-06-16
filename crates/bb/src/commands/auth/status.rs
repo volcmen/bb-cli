@@ -1,8 +1,8 @@
 //! `bb auth status` — show who you're logged in as on each host.
 
-use bb_api::models::User;
-use bb_api::BitbucketClient;
-use bb_core::{AuthError, Context};
+use crate::api::models::User;
+use crate::api::BitbucketClient;
+use crate::core::{AuthError, Context};
 use clap::Args;
 
 use crate::auth;
@@ -22,7 +22,7 @@ pub struct StatusArgs {
 ///
 /// # Errors
 /// Returns [`AuthError`] when there are no hosts or any host fails to
-/// authenticate; propagates other [`ApiError`](bb_core::ApiError)s.
+/// authenticate; propagates other [`ApiError`](crate::core::ApiError)s.
 pub fn run(ctx: &Context, args: StatusArgs) -> anyhow::Result<()> {
     let hosts: Vec<String> = match args.hostname {
         Some(h) => vec![h],
@@ -71,10 +71,10 @@ pub fn run(ctx: &Context, args: StatusArgs) -> anyhow::Result<()> {
 mod tests {
     use std::sync::Arc;
 
-    use bb_api::testing::FakeTransport;
-    use bb_config::FileConfig;
-    use bb_core::{ConfigProvider, GitClient, Method, Transport};
-    use bb_git::{ShellGit, StubRunner};
+    use crate::api::testing::FakeTransport;
+    use crate::config::FileConfig;
+    use crate::core::{ConfigProvider, GitClient, Method, Transport};
+    use crate::git::{ShellGit, StubRunner};
 
     use super::*;
     use crate::testsupport::{test_context, ScriptedPrompter};

@@ -9,11 +9,14 @@
 //! provider so `BB_TOKEN` / `BB_HOST` take precedence (the analog of `gh`'s
 //! `envConfig`).
 
+// Absorbed from the former `bb-config` crate: full ConfigProvider API retained.
+#![allow(dead_code)]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use bb_core::{ConfigError, ConfigProvider, DEFAULT_HOST};
+use crate::core::{ConfigError, ConfigProvider, DEFAULT_HOST};
 
 type Map = BTreeMap<String, String>;
 

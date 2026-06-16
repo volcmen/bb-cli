@@ -4,7 +4,7 @@ mod clone;
 mod list;
 mod view;
 
-use bb_core::Context;
+use crate::core::Context;
 use clap::{Args, Subcommand};
 
 #[derive(Args, Debug)]

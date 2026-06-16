@@ -1,8 +1,8 @@
 //! Shared pull-request resolution: by numeric id, or by inferring from the
 //! current git branch (the analog of `gh`'s PR finder).
 
-use bb_api::{BitbucketClient, PullRequest};
-use bb_core::{Context, FlagError, RepoId};
+use crate::api::{BitbucketClient, PullRequest};
+use crate::core::{Context, FlagError, RepoId};
 
 use crate::render::percent_encode;
 
@@ -80,10 +80,10 @@ fn find_by_branch(
 mod tests {
     use std::sync::Arc;
 
-    use bb_api::testing::FakeTransport;
-    use bb_config::FileConfig;
-    use bb_core::{ConfigProvider, GitClient, Method, Transport};
-    use bb_git::{ShellGit, StubRunner};
+    use crate::api::testing::FakeTransport;
+    use crate::config::FileConfig;
+    use crate::core::{ConfigProvider, GitClient, Method, Transport};
+    use crate::git::{ShellGit, StubRunner};
 
     use super::*;
     use crate::testsupport::{test_context, ScriptedPrompter};

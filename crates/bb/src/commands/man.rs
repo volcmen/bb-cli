@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use bb_core::{Context, FlagError};
+use crate::core::{Context, FlagError};
 use clap::{Args, CommandFactory};
 
 #[derive(Args, Debug)]
@@ -73,10 +73,10 @@ fn render_into(cmd: &clap::Command, prefix: &str, pages: &mut Vec<(String, Vec<u
 mod tests {
     use std::sync::Arc;
 
-    use bb_api::testing::FakeTransport;
-    use bb_config::FileConfig;
-    use bb_core::{ConfigProvider, GitClient, Transport};
-    use bb_git::{ShellGit, StubRunner};
+    use crate::api::testing::FakeTransport;
+    use crate::config::FileConfig;
+    use crate::core::{ConfigProvider, GitClient, Transport};
+    use crate::git::{ShellGit, StubRunner};
 
     use super::*;
     use crate::testsupport::{test_context, ScriptedPrompter};

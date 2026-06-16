@@ -4,9 +4,9 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 
-use bb_api::models::User;
-use bb_api::BitbucketClient;
-use bb_core::{Context, FlagError};
+use crate::api::models::User;
+use crate::api::BitbucketClient;
+use crate::core::{Context, FlagError};
 use clap::Args;
 
 use crate::auth;
@@ -59,8 +59,8 @@ impl std::fmt::Debug for LoginArgs {
 ///
 /// # Errors
 /// Returns [`FlagError`] for invalid credentials or missing non-interactive
-/// inputs, [`CancelError`](bb_core::CancelError) if a prompt is cancelled, and
-/// propagates other [`ApiError`](bb_core::ApiError)s.
+/// inputs, [`CancelError`](crate::core::CancelError) if a prompt is cancelled, and
+/// propagates other [`ApiError`](crate::core::ApiError)s.
 pub fn run(ctx: &Context, args: LoginArgs) -> anyhow::Result<()> {
     let host = args
         .hostname
@@ -142,7 +142,7 @@ fn basic_login(ctx: &Context, host: &str, args: &LoginArgs) -> anyhow::Result<()
             // Surface the server's actual message — e.g. an Atlassian API token
             // without Bitbucket scopes returns "not supported for this endpoint".
             let detail = match &err {
-                bb_core::ApiError::Http { message, .. } => message.as_str(),
+                crate::core::ApiError::Http { message, .. } => message.as_str(),
                 _ => "unauthorized",
             };
             return Err(FlagError::new(format!(
@@ -176,7 +176,7 @@ const OAUTH_SCOPES: &str = "account repository pullrequest issue pipeline webhoo
 
 fn oauth_login(ctx: &Context, host: &str, args: &LoginArgs) -> anyhow::Result<()> {
     // OAuth endpoints are Bitbucket Cloud-only.
-    if host != bb_core::DEFAULT_HOST {
+    if host != crate::core::DEFAULT_HOST {
         return Err(FlagError::new(format!(
             "OAuth login (--web) is only supported on bitbucket.org; \
              Data Center OAuth for {host} is not supported yet. \
@@ -493,12 +493,12 @@ fn url_encode(s: &str) -> String {
 /// decode the JSON response as `T`. Goes through the [`Transport`] seam directly
 /// because [`BitbucketClient`] only speaks JSON request bodies.
 fn post_form<T: serde::de::DeserializeOwned>(
-    transport: &dyn bb_core::Transport,
+    transport: &dyn crate::core::Transport,
     url: &str,
     body: &str,
     basic_auth: &str,
 ) -> anyhow::Result<T> {
-    use bb_core::{ApiError, HttpRequest, Method};
+    use crate::core::{ApiError, HttpRequest, Method};
 
     let req = HttpRequest::new(Method::Post, url)
         .header("Accept", "application/json")
@@ -531,9 +531,9 @@ fn post_form<T: serde::de::DeserializeOwned>(
     serde_json::from_slice(&resp.body).map_err(|e| ApiError::Decode(e.to_string()).into())
 }
 
-fn to_anyhow(err: bb_core::PromptError) -> anyhow::Error {
+fn to_anyhow(err: crate::core::PromptError) -> anyhow::Error {
     match err {
-        bb_core::PromptError::Cancelled => bb_core::CancelError.into(),
+        crate::core::PromptError::Cancelled => crate::core::CancelError.into(),
         other => anyhow::anyhow!(other),
     }
 }
@@ -542,11 +542,11 @@ fn to_anyhow(err: bb_core::PromptError) -> anyhow::Error {
 mod tests {
     use std::sync::Arc;
 
-    use bb_api::testing::FakeTransport;
-    use bb_config::FileConfig;
-    use bb_core::{ConfigProvider, GitClient, Method, Prompter, Transport};
-    use bb_core::{Context, IoStreams, TestBuffers};
-    use bb_git::{ShellGit, StubRunner};
+    use crate::api::testing::FakeTransport;
+    use crate::config::FileConfig;
+    use crate::core::{ConfigProvider, GitClient, Method, Prompter, Transport};
+    use crate::core::{Context, IoStreams, TestBuffers};
+    use crate::git::{ShellGit, StubRunner};
 
     use super::*;
     use crate::testsupport::{test_context, RecordingBrowser, ScriptedPrompter};

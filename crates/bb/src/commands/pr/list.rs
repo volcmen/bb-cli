@@ -1,8 +1,8 @@
 //! `bb pr list` — list pull requests for the current repository.
 
-use bb_api::models::PullRequest;
-use bb_api::BitbucketClient;
-use bb_core::{AuthError, Context};
+use crate::api::models::PullRequest;
+use crate::api::BitbucketClient;
+use crate::core::{AuthError, Context};
 use clap::Args;
 
 use super::render;
@@ -44,7 +44,7 @@ pub struct ListArgs {
 ///
 /// # Errors
 /// Returns [`AuthError`] (exit 4) if not authenticated for the repo's host, and
-/// propagates [`ApiError`](bb_core::ApiError) from the listing call.
+/// propagates [`ApiError`](crate::core::ApiError) from the listing call.
 pub fn run(ctx: &Context, args: ListArgs) -> anyhow::Result<()> {
     let repo = ctx.base_repo()?;
     let host = repo.host().to_owned();
@@ -99,10 +99,10 @@ pub fn run(ctx: &Context, args: ListArgs) -> anyhow::Result<()> {
 mod tests {
     use std::sync::Arc;
 
-    use bb_api::testing::FakeTransport;
-    use bb_config::FileConfig;
-    use bb_core::{ConfigProvider, GitClient, Method, Transport};
-    use bb_git::{ShellGit, StubRunner};
+    use crate::api::testing::FakeTransport;
+    use crate::config::FileConfig;
+    use crate::core::{ConfigProvider, GitClient, Method, Transport};
+    use crate::git::{ShellGit, StubRunner};
 
     use super::*;
     use crate::testsupport::{test_context, ScriptedPrompter};
@@ -341,7 +341,7 @@ mod tests {
             ..list_args()
         };
         let err = run(&ctx, a).unwrap_err();
-        assert!(err.downcast_ref::<bb_core::FlagError>().is_some());
+        assert!(err.downcast_ref::<crate::core::FlagError>().is_some());
     }
 
     #[test]

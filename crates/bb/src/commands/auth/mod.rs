@@ -3,7 +3,7 @@
 mod login;
 mod status;
 
-use bb_core::Context;
+use crate::core::Context;
 use clap::{Args, Subcommand};
 
 #[derive(Args, Debug)]

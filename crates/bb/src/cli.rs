@@ -1,7 +1,7 @@
 //! The clap command tree and dispatch. New commands are added to [`Commands`]
 //! and routed in [`dispatch`].
 
-use bb_core::{FlagError, RepoId};
+use crate::core::{FlagError, RepoId};
 use clap::{CommandFactory, Parser, Subcommand};
 
 use crate::commands::{

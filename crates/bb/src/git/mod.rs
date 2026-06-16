@@ -1,24 +1,27 @@
 //! `bb-git` — git integration.
 //!
-//! [`ShellGit`] implements [`GitClient`](bb_core::GitClient) by shelling out to
+//! [`ShellGit`] implements [`GitClient`](crate::core::GitClient) by shelling out to
 //! `git` through an injectable [`CommandRunner`] (the analog of `gh`'s
 //! `internal/run`), so tests can stub git output deterministically.
 //! [`parse_remote_url`] maps a Bitbucket remote URL to a
-//! [`RepoId`](bb_core::RepoId).
+//! [`RepoId`](crate::core::RepoId).
+
+// Absorbed from the former `bb-git` crate: full GitClient API retained.
+#![allow(dead_code)]
 
 mod runner;
 mod url;
 
-pub use runner::{CommandOutput, CommandRunner, RealRunner};
+pub use runner::{CommandRunner, RealRunner};
 pub use url::parse_remote_url;
 
-#[cfg(any(test, feature = "test-util"))]
+#[cfg(test)]
 pub use runner::StubRunner;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use bb_core::{Commit, GitClient, GitError, Remote};
+use crate::core::{Commit, GitClient, GitError, Remote};
 
 /// A [`GitClient`] that shells out to `git`.
 pub struct ShellGit {
@@ -73,7 +76,7 @@ impl GitClient for ShellGit {
 
     fn remotes(&self) -> Result<Vec<Remote>, GitError> {
         let out = self.run(&["remote", "-v"])?;
-        let mut seen: BTreeMap<String, bb_core::RepoId> = BTreeMap::new();
+        let mut seen: BTreeMap<String, crate::core::RepoId> = BTreeMap::new();
         for line in out.lines() {
             let mut fields = line.split_whitespace();
             let (Some(name), Some(url)) = (fields.next(), fields.next()) else {

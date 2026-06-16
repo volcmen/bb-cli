@@ -1,8 +1,8 @@
 //! `bb repo view` — show a repository's details, or open it in the browser.
 
-use bb_api::models::Repository;
-use bb_api::BitbucketClient;
-use bb_core::{AuthError, Context, FlagError, RepoId};
+use crate::api::models::Repository;
+use crate::api::BitbucketClient;
+use crate::core::{AuthError, Context, FlagError, RepoId};
 use clap::Args;
 
 use crate::auth;
@@ -39,7 +39,7 @@ pub struct ViewArgs {
 /// # Errors
 /// Returns [`AuthError`] (exit 4) if not authenticated for the repo's host,
 /// [`FlagError`] (exit 1) for a malformed target or when the repository is not
-/// found, and propagates [`ApiError`](bb_core::ApiError) from the lookup.
+/// found, and propagates [`ApiError`](crate::core::ApiError) from the lookup.
 pub fn run(ctx: &Context, args: ViewArgs) -> anyhow::Result<()> {
     let repo = resolve_target(ctx, args.repo.as_deref())?;
     let host = repo.host().to_owned();
@@ -127,10 +127,10 @@ fn render_view(repo: &RepoId, r: &Repository) -> String {
 mod tests {
     use std::sync::Arc;
 
-    use bb_api::testing::FakeTransport;
-    use bb_config::FileConfig;
-    use bb_core::{ConfigProvider, GitClient, Method, RepoId, Transport};
-    use bb_git::{ShellGit, StubRunner};
+    use crate::api::testing::FakeTransport;
+    use crate::config::FileConfig;
+    use crate::core::{ConfigProvider, GitClient, Method, RepoId, Transport};
+    use crate::git::{ShellGit, StubRunner};
 
     use super::*;
     use crate::testsupport::{test_context, ScriptedPrompter};

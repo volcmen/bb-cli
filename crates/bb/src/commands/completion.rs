@@ -2,7 +2,7 @@
 //! analog). Pure and offline: it renders the static `clap` command tree, with
 //! no network or authentication.
 
-use bb_core::{Context, FlagError};
+use crate::core::{Context, FlagError};
 use clap::{Args, CommandFactory};
 use clap_complete::Shell;
 
@@ -51,10 +51,10 @@ fn render(shell: Shell) -> String {
 mod tests {
     use std::sync::Arc;
 
-    use bb_api::testing::FakeTransport;
-    use bb_config::FileConfig;
-    use bb_core::{ConfigProvider, GitClient, TestBuffers, Transport};
-    use bb_git::{ShellGit, StubRunner};
+    use crate::api::testing::FakeTransport;
+    use crate::config::FileConfig;
+    use crate::core::{ConfigProvider, GitClient, TestBuffers, Transport};
+    use crate::git::{ShellGit, StubRunner};
 
     use super::*;
     use crate::testsupport::{test_context, ScriptedPrompter};

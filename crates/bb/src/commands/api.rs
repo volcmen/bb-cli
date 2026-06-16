@@ -5,7 +5,7 @@
 //! verbatim (no 2xx-only filtering), pretty-prints JSON responses, and maps an
 //! HTTP status `>= 400` to a non-zero exit.
 
-use bb_core::{Context, FlagError, Method, SilentError};
+use crate::core::{Context, FlagError, Method, SilentError};
 use clap::Args;
 use serde_json::Value;
 
@@ -28,15 +28,15 @@ pub struct ApiArgs {
 /// Run `bb api`.
 ///
 /// # Errors
-/// Returns [`bb_core::AuthError`] when no credentials are stored,
+/// Returns [`crate::core::AuthError`] when no credentials are stored,
 /// [`FlagError`] for an unknown method / malformed `-f` field / illegal flag
 /// combination, and [`SilentError`] when the response status is `>= 400`.
 pub fn run(ctx: &Context, args: ApiArgs) -> anyhow::Result<()> {
     let host = ctx.host();
     let Some(header) = crate::auth::header_for(ctx.config.as_ref(), &host) else {
-        return Err(bb_core::AuthError::new(host).into());
+        return Err(crate::core::AuthError::new(host).into());
     };
-    let client = bb_api::BitbucketClient::new(ctx.transport.clone(), Some(header));
+    let client = crate::api::BitbucketClient::new(ctx.transport.clone(), Some(header));
 
     let method = parse_method(&args.method)?;
     let body = build_body(&args.fields)?;
@@ -69,7 +69,11 @@ pub fn run(ctx: &Context, args: ApiArgs) -> anyhow::Result<()> {
 
 /// Follow body-based pagination: GET each page, concatenate every page's
 /// `values` array, and print the combined array once.
-fn run_paginate(ctx: &Context, client: &bb_api::BitbucketClient, path: &str) -> anyhow::Result<()> {
+fn run_paginate(
+    ctx: &Context,
+    client: &crate::api::BitbucketClient,
+    path: &str,
+) -> anyhow::Result<()> {
     let mut all: Vec<Value> = Vec::new();
     // The first request uses the (possibly relative) `path`; subsequent ones use
     // the absolute `next` URL returned by Bitbucket.
@@ -133,10 +137,10 @@ fn build_body(fields: &[String]) -> Result<Option<Vec<u8>>, FlagError> {
 mod tests {
     use std::sync::Arc;
 
-    use bb_api::testing::FakeTransport;
-    use bb_config::FileConfig;
-    use bb_core::{AuthError, ConfigProvider, GitClient, Method, Transport};
-    use bb_git::{ShellGit, StubRunner};
+    use crate::api::testing::FakeTransport;
+    use crate::config::FileConfig;
+    use crate::core::{AuthError, ConfigProvider, GitClient, Method, Transport};
+    use crate::git::{ShellGit, StubRunner};
 
     use super::*;
     use crate::testsupport::{test_context, ScriptedPrompter};

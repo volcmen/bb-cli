@@ -1,8 +1,8 @@
 //! `bb pr create` — open a pull request for the current branch.
 
-use bb_api::models::{PullRequest, Repository};
-use bb_api::{BitbucketClient, Membership};
-use bb_core::{AuthError, Context, FlagError, RepoId};
+use crate::api::models::{PullRequest, Repository};
+use crate::api::{BitbucketClient, Membership};
+use crate::core::{AuthError, Context, FlagError, RepoId};
 use clap::Args;
 
 use crate::auth;
@@ -68,7 +68,7 @@ struct CreatePrBody<'a> {
 /// # Errors
 /// Returns [`AuthError`] (exit 4) if not authenticated, [`FlagError`] for usage
 /// errors (e.g. no title when non-interactive), and propagates
-/// [`ApiError`](bb_core::ApiError) / IO errors.
+/// [`ApiError`](crate::core::ApiError) / IO errors.
 pub fn run(ctx: &Context, args: CreateArgs) -> anyhow::Result<()> {
     let repo = ctx.base_repo()?;
     let host = repo.host().to_owned();
@@ -240,7 +240,7 @@ fn resolve_reviewers(
 
 /// Whether `user` matches the requested reviewer string on any identity field,
 /// compared case-insensitively.
-fn member_matches(user: &bb_api::User, want: &str) -> bool {
+fn member_matches(user: &crate::api::User, want: &str) -> bool {
     [
         user.uuid.as_deref(),
         user.account_id.as_deref(),
@@ -268,9 +268,9 @@ fn url_encode(s: &str) -> String {
     out
 }
 
-fn to_anyhow(err: bb_core::PromptError) -> anyhow::Error {
+fn to_anyhow(err: crate::core::PromptError) -> anyhow::Error {
     match err {
-        bb_core::PromptError::Cancelled => bb_core::CancelError.into(),
+        crate::core::PromptError::Cancelled => crate::core::CancelError.into(),
         other => anyhow::anyhow!(other),
     }
 }
@@ -279,10 +279,10 @@ fn to_anyhow(err: bb_core::PromptError) -> anyhow::Error {
 mod tests {
     use std::sync::Arc;
 
-    use bb_api::testing::FakeTransport;
-    use bb_config::FileConfig;
-    use bb_core::{ConfigProvider, GitClient, Method, Transport};
-    use bb_git::{ShellGit, StubRunner};
+    use crate::api::testing::FakeTransport;
+    use crate::config::FileConfig;
+    use crate::core::{ConfigProvider, GitClient, Method, Transport};
+    use crate::git::{ShellGit, StubRunner};
 
     use super::*;
     use crate::testsupport::{test_context, ScriptedPrompter};
@@ -447,7 +447,9 @@ mod tests {
             ..create_args()
         };
         let err = run(&ctx, a).unwrap_err();
-        let api = err.downcast_ref::<bb_core::ApiError>().expect("ApiError");
+        let api = err
+            .downcast_ref::<crate::core::ApiError>()
+            .expect("ApiError");
         assert_eq!(api.status(), Some(500));
     }
 

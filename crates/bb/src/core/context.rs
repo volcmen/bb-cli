@@ -2,10 +2,10 @@
 
 use std::sync::Arc;
 
-use crate::error::GitError;
-use crate::io::IoStreams;
-use crate::repo::RepoId;
-use crate::traits::{Browser, ConfigProvider, GitClient, Prompter, Transport};
+use crate::core::error::GitError;
+use crate::core::io::IoStreams;
+use crate::core::repo::RepoId;
+use crate::core::traits::{Browser, ConfigProvider, GitClient, Prompter, Transport};
 
 /// Holds the injected seam-trait objects so every command is testable by
 /// swapping implementations. Cheap to [`Clone`] (everything is `Arc`).

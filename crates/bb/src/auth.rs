@@ -2,8 +2,8 @@
 //! commands). Reads stored credentials from config and produces the
 //! `Authorization` header value.
 
+use crate::core::ConfigProvider;
 use base64::Engine;
-use bb_core::ConfigProvider;
 
 /// `auth_type` value: Atlassian API token (Basic, `email:token`).
 pub const API_TOKEN: &str = "api_token";

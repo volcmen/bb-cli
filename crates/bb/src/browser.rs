@@ -1,6 +1,6 @@
 //! The real [`Browser`] implementation: shell out to the OS opener.
 
-use bb_core::Browser;
+use crate::core::Browser;
 
 /// Opens URLs with the platform's default handler (`open` / `xdg-open` / `start`).
 pub struct SystemBrowser;

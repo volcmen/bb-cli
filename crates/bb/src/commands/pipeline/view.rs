@@ -1,8 +1,8 @@
 //! `bb pipeline view` — show a pipeline's state, steps, and (optionally) logs.
 
-use bb_api::models::{Pipeline, PipelineStep};
-use bb_api::BitbucketClient;
-use bb_core::{AuthError, ColorScheme, Context, FlagError};
+use crate::api::models::{Pipeline, PipelineStep};
+use crate::api::BitbucketClient;
+use crate::core::{AuthError, ColorScheme, Context, FlagError};
 use clap::Args;
 
 use crate::auth;
@@ -28,7 +28,7 @@ pub struct ViewArgs {
 /// # Errors
 /// Returns [`AuthError`] (exit 4) if not authenticated for the repo's host,
 /// [`FlagError`] (exit 1) when the pipeline is not found, and propagates
-/// [`ApiError`](bb_core::ApiError) from the lookups.
+/// [`ApiError`](crate::core::ApiError) from the lookups.
 pub fn run(ctx: &Context, args: ViewArgs) -> anyhow::Result<()> {
     let repo = ctx.base_repo()?;
     let host = repo.host().to_owned();
@@ -178,10 +178,10 @@ fn color_result(cs: ColorScheme, result: &str) -> String {
 mod tests {
     use std::sync::Arc;
 
-    use bb_api::testing::FakeTransport;
-    use bb_config::FileConfig;
-    use bb_core::{ConfigProvider, GitClient, Method, RepoId, Transport};
-    use bb_git::{ShellGit, StubRunner};
+    use crate::api::testing::FakeTransport;
+    use crate::config::FileConfig;
+    use crate::core::{ConfigProvider, GitClient, Method, RepoId, Transport};
+    use crate::git::{ShellGit, StubRunner};
 
     use super::*;
     use crate::testsupport::{test_context, ScriptedPrompter};
@@ -418,7 +418,7 @@ mod tests {
 
     #[test]
     fn render_pipeline_colors_result_when_enabled() {
-        let (mut io, _) = bb_core::IoStreams::test();
+        let (mut io, _) = crate::core::IoStreams::test();
         io.set_stdout_tty(true);
         let cs = io.color_scheme();
         let p: Pipeline = serde_json::from_str(PIPELINE_12).unwrap();

@@ -1,5 +1,11 @@
 //! `bb` — entry point and exit-code mapping (mirrors `gh`'s `mainRun`/`printError`).
 
+// Former workspace crates, now modules of the single published `bb-cli` crate.
+mod api;
+mod config;
+mod core;
+mod git;
+
 mod auth;
 mod browser;
 mod cli;
@@ -14,7 +20,7 @@ mod testsupport;
 
 use std::process::ExitCode;
 
-use bb_core::{ApiError, AuthError, CancelError, ExitCode as Bb, FlagError, SilentError};
+use crate::core::{ApiError, AuthError, CancelError, ExitCode as Bb, FlagError, SilentError};
 
 fn main() -> ExitCode {
     // `clap` auto-handles `--version`, `--help`, and parse errors (exit 2).

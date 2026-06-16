@@ -6,7 +6,7 @@
 //! command's allowlist, projects to those fields, and then applies `--jq` (the
 //! analog of `gh`'s `--jq`) or pretty-prints.
 
-use bb_core::{FlagError, IoStreams};
+use crate::core::{FlagError, IoStreams};
 use serde_json::{Map, Value};
 
 /// Shared output flags, flattened into list/view commands.

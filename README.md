@@ -4,16 +4,24 @@
 Bitbucket, written in Rust. Authenticate, create and manage pull requests, and
 work with repositories from the terminal.
 
-> Status: **early development** (Epic 0 — walking skeleton). See the
-> [roadmap issues](https://github.com/volcmen/bb-cli/issues) and `specs/`.
+> Status: auth (incl. OAuth `--web` with seamless token refresh), pull requests,
+> repos, issues, pipelines, browse, `api`, and `--json`/`--jq`/`--template` all
+> work. See the [roadmap issues](https://github.com/volcmen/bb-cli/issues) and `specs/`.
 
-## Install (from source)
+## Install
 
 ```bash
+cargo install bb-cli           # from crates.io — installs the `bb` binary
+# from source:
 cargo install --path crates/bb
-# or
-cargo build --release   # binary at target/release/bb
+# or just build:
+cargo build --release          # binary at target/release/bb
 ```
+
+A `cargo install` build has no OAuth consumer baked in, so `bb auth login --web`
+needs your own consumer (`--client-id/--client-secret`, or `BB_OAUTH_CLIENT_ID`/
+`BB_OAUTH_CLIENT_SECRET`) — or just use an app password / API token. Pre-built
+release binaries can ship with a consumer embedded.
 
 ## Quickstart
 

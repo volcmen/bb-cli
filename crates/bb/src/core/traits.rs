@@ -1,9 +1,9 @@
 //! Dependency-injection **seam traits**. Concrete implementations live in the
 //! leaf crates and the `bb` binary; tests swap in fakes.
 
-use crate::error::{ApiError, ConfigError, GitError, PromptError};
-use crate::http::{HttpRequest, HttpResponse};
-use crate::repo::RepoId;
+use crate::core::error::{ApiError, ConfigError, GitError, PromptError};
+use crate::core::http::{HttpRequest, HttpResponse};
+use crate::core::repo::RepoId;
 
 /// HTTP transport seam — the entire network-testability story (the analog of
 /// `gh`'s `ReplaceTripper`). The real impl wraps `reqwest`; tests inject a fake.
