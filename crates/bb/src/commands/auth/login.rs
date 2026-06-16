@@ -250,10 +250,8 @@ fn oauth_login(ctx: &Context, host: &str, args: &LoginArgs) -> anyhow::Result<()
     // Wait for the redirect carrying the auth code (and verify the CSRF state).
     let code = wait_for_code(&listener, &state, CALLBACK_TIMEOUT)?;
 
-    let client = BitbucketClient::new(ctx.transport.clone(), None);
     let label = exchange_and_store(
         ctx,
-        &client,
         host,
         &client_id,
         &client_secret,
@@ -400,23 +398,13 @@ fn embedded_client_secret() -> Option<String> {
         .map(str::to_owned)
 }
 
-/// The token-exchange response from Bitbucket's `/access_token` endpoint.
-#[derive(serde::Deserialize)]
-struct TokenResponse {
-    access_token: String,
-    #[serde(default)]
-    refresh_token: Option<String>,
-}
-
 /// Exchange the authorization `code` for tokens, validate via `GET /user`, and
 /// persist the OAuth credentials. Returns the authenticated user's label.
 ///
 /// Factored out so it can be unit-tested with a `FakeTransport` (no listener or
 /// browser involved).
-#[allow(clippy::too_many_arguments)]
 fn exchange_and_store(
     ctx: &Context,
-    client: &BitbucketClient,
     host: &str,
     client_id: &str,
     client_secret: &str,
@@ -431,18 +419,20 @@ fn exchange_and_store(
         code_verifier,
     };
     let basic = auth::basic_header(client_id, client_secret);
-    let token: TokenResponse = post_form(
+    let token: auth::TokenResponse = auth::post_form(
         ctx.transport.as_ref(),
-        "https://bitbucket.org/site/oauth2/access_token",
+        auth::TOKEN_URL,
         &form.encode(),
         &basic,
     )?;
 
-    // Validate with the access token.
+    // Validate with the access token. The refresh decorator only refreshes when
+    // the failing bearer matches the *stored* token, so this freshly-minted
+    // token (which differs from any previously-stored one) can't trigger a
+    // spurious refresh during a re-login.
     let bearer = auth::bearer_header(&token.access_token);
     let authed = BitbucketClient::new(ctx.transport.clone(), Some(bearer));
     let user: User = authed.get::<User>("/user")?;
-    let _ = client; // reserved for future refresh flows
 
     ctx.config.set(host, "auth_type", auth::OAUTH)?;
     ctx.config.set(host, "token", &token.access_token)?;
@@ -487,48 +477,6 @@ fn url_encode(s: &str) -> String {
         }
     }
     out
-}
-
-/// POST a form-encoded body to `url` with a Basic `Authorization` header and
-/// decode the JSON response as `T`. Goes through the [`Transport`] seam directly
-/// because [`BitbucketClient`] only speaks JSON request bodies.
-fn post_form<T: serde::de::DeserializeOwned>(
-    transport: &dyn crate::core::Transport,
-    url: &str,
-    body: &str,
-    basic_auth: &str,
-) -> anyhow::Result<T> {
-    use crate::core::{ApiError, HttpRequest, Method};
-
-    let req = HttpRequest::new(Method::Post, url)
-        .header("Accept", "application/json")
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .header("Authorization", basic_auth.to_owned())
-        .body(body.as_bytes().to_vec());
-
-    let resp = transport.execute(req)?;
-    if !resp.is_success() {
-        // Surface Bitbucket's error_description so live failures are diagnosable
-        // (e.g. invalid_grant, redirect_uri_mismatch) instead of a bare status.
-        let detail = String::from_utf8_lossy(&resp.body);
-        let detail = detail.trim();
-        let message = if detail.is_empty() {
-            format!("token exchange failed with status {}", resp.status)
-        } else {
-            format!(
-                "token exchange failed with status {}: {detail}",
-                resp.status
-            )
-        };
-        return Err(ApiError::Http {
-            status: resp.status,
-            url: url.to_owned(),
-            message,
-            errors: Vec::new(),
-        }
-        .into());
-    }
-    serde_json::from_slice(&resp.body).map_err(|e| ApiError::Decode(e.to_string()).into())
 }
 
 fn to_anyhow(err: crate::core::PromptError) -> anyhow::Error {
@@ -746,10 +694,8 @@ mod tests {
         let prompter = Arc::new(ScriptedPrompter::new());
         let (ctx, _bufs) = test_context(transport.clone(), git(), config, prompter, false);
 
-        let client = BitbucketClient::new(transport, None);
         let label = exchange_and_store(
             &ctx,
-            &client,
             "bitbucket.org",
             "cid",
             "csecret",

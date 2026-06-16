@@ -11,25 +11,14 @@
 
 use std::sync::Arc;
 
-use crate::core::{ApiError, ConfigProvider, HttpRequest, HttpResponse, Method, Transport};
-
 use crate::auth;
+use crate::core::{ApiError, ConfigProvider, HttpRequest, HttpResponse, Transport};
 use crate::render::percent_encode;
-
-/// Bitbucket Cloud OAuth token endpoint (refresh grants go here).
-const TOKEN_URL: &str = "https://bitbucket.org/site/oauth2/access_token";
 
 pub struct RefreshingTransport {
     inner: Arc<dyn Transport>,
     config: Arc<dyn ConfigProvider>,
     host: String,
-}
-
-#[derive(serde::Deserialize)]
-struct RefreshResponse {
-    access_token: String,
-    #[serde(default)]
-    refresh_token: Option<String>,
 }
 
 impl RefreshingTransport {
@@ -42,11 +31,19 @@ impl RefreshingTransport {
     }
 
     /// Exchange the stored refresh token for a new access token, persist it, and
-    /// return it. Returns `None` when refresh is not applicable or fails — the
-    /// caller then surfaces the original `401`.
-    fn try_refresh(&self) -> Option<String> {
+    /// return it. `failed_bearer` is the token that just got a 401. Returns
+    /// `None` when refresh is not applicable or fails — the caller then surfaces
+    /// the original `401`.
+    fn try_refresh(&self, failed_bearer: &str) -> Option<String> {
         let host = &self.host;
         if self.config.get(host, "auth_type").as_deref() != Some(auth::OAUTH) {
+            return None;
+        }
+        // Only refresh the credential that actually failed — the *stored* token.
+        // A bearer that differs from what's on disk (a `BB_TOKEN` env override,
+        // or a freshly-minted token mid-login) isn't ours to refresh: doing so
+        // wouldn't fix this request and would clobber the stored credentials.
+        if self.config.get(host, "token").as_deref() != Some(failed_bearer) {
             return None;
         }
         let refresh_token = self.config.get(host, "refresh_token")?;
@@ -57,45 +54,45 @@ impl RefreshingTransport {
             "grant_type=refresh_token&refresh_token={}",
             percent_encode(&refresh_token)
         );
-        let req = HttpRequest::new(Method::Post, TOKEN_URL)
-            .header("Accept", "application/json")
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .header(
-                "Authorization",
-                auth::basic_header(&client_id, &client_secret),
-            )
-            .body(body.into_bytes());
+        let basic = auth::basic_header(&client_id, &client_secret);
+        let token: auth::TokenResponse =
+            match auth::post_form(self.inner.as_ref(), auth::TOKEN_URL, &body, &basic) {
+                Ok(t) => t,
+                Err(e) => {
+                    // Surface *why* refresh failed (e.g. invalid_grant, or a
+                    // transient 5xx/network error) rather than silently
+                    // degrading to the original 401.
+                    eprintln!("bb: OAuth token refresh failed: {e}");
+                    return None;
+                }
+            };
 
-        let resp = self.inner.execute(req).ok()?;
-        if !resp.is_success() {
-            return None;
-        }
-        let parsed: RefreshResponse = serde_json::from_slice(&resp.body).ok()?;
-
-        // Persist the rotated credentials. Best-effort: even if the save fails we
-        // return the access token so the in-flight command still succeeds.
-        let _ = self.config.set(host, "token", &parsed.access_token);
-        if let Some(rt) = &parsed.refresh_token {
+        let _ = self.config.set(host, "token", &token.access_token);
+        if let Some(rt) = &token.refresh_token {
             let _ = self.config.set(host, "refresh_token", rt);
         }
-        let _ = self.config.save();
-
-        Some(parsed.access_token)
+        if let Err(e) = self.config.save() {
+            // The new token works for this command, but the rotated refresh
+            // token wasn't written — warn so a later forced re-login is explicable.
+            eprintln!("bb: refreshed the OAuth token but could not save it: {e}");
+        }
+        Some(token.access_token)
     }
 }
 
 impl Transport for RefreshingTransport {
     fn execute(&self, req: HttpRequest) -> Result<HttpResponse, ApiError> {
-        // Only OAuth (bearer) requests are refreshable. Basic-auth requests
-        // (app password / API token) can't be refreshed, so pass them straight
-        // through.
-        let is_bearer = req
+        // Only OAuth (bearer) requests are refreshable. Capture the token about
+        // to be tried so we refresh only if *it* is what failed. Basic-auth
+        // requests (app password / API token) pass straight through.
+        let failed_bearer = req
             .headers
             .get("Authorization")
-            .is_some_and(|v| v.starts_with("Bearer "));
-        if !is_bearer {
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .map(str::to_owned);
+        let Some(failed_bearer) = failed_bearer else {
             return self.inner.execute(req);
-        }
+        };
 
         let retry = req.clone();
         let resp = self.inner.execute(req)?;
@@ -103,7 +100,7 @@ impl Transport for RefreshingTransport {
             return Ok(resp);
         }
 
-        match self.try_refresh() {
+        match self.try_refresh(&failed_bearer) {
             Some(new_token) => {
                 let mut retry = retry;
                 retry
@@ -121,6 +118,7 @@ mod tests {
     use std::sync::Mutex;
 
     use crate::config::FileConfig;
+    use crate::core::Method;
 
     use super::*;
 
@@ -204,7 +202,7 @@ mod tests {
         // Three inner calls: original (401), refresh POST, retry with new token.
         let seen = inner.seen.lock().unwrap();
         assert_eq!(seen.len(), 3);
-        assert_eq!(seen[1].url, TOKEN_URL);
+        assert_eq!(seen[1].url, auth::TOKEN_URL);
         assert_eq!(
             seen[2].headers.get("Authorization").map(String::as_str),
             Some("Bearer new-access")
@@ -250,5 +248,29 @@ mod tests {
         let out = t.execute(req).unwrap();
         assert_eq!(out.status, 401);
         assert_eq!(inner.seen.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn bearer_not_matching_stored_token_is_not_refreshed() {
+        // The 401'd bearer differs from the stored token (e.g. a BB_TOKEN env
+        // override, or a freshly-minted token mid-login). Refreshing the stored
+        // creds wouldn't help this request and would clobber them, so skip it.
+        let inner = Arc::new(ScriptedTransport::new(vec![resp(401, "{}")]));
+        let (config, _dir) = oauth_config(); // stored token = "old-access"
+        let t = RefreshingTransport::new(inner.clone(), config.clone(), "bitbucket.org".to_owned());
+
+        let out = t.execute(bearer_get("some-other-token")).unwrap();
+        assert_eq!(out.status, 401);
+        // Original request only — no refresh POST, no retry.
+        assert_eq!(inner.seen.lock().unwrap().len(), 1);
+        // Stored creds untouched.
+        assert_eq!(
+            config.get("bitbucket.org", "token").as_deref(),
+            Some("old-access")
+        );
+        assert_eq!(
+            config.get("bitbucket.org", "refresh_token").as_deref(),
+            Some("rt-1")
+        );
     }
 }
