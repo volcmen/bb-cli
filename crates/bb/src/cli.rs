@@ -5,8 +5,8 @@ use bb_core::{FlagError, RepoId};
 use clap::{CommandFactory, Parser, Subcommand};
 
 use crate::commands::{
-    api::ApiArgs, auth::AuthArgs, browse::BrowseArgs, issue::IssueArgs, pipeline::PipelineArgs,
-    pr::PrArgs, repo::RepoArgs,
+    api::ApiArgs, auth::AuthArgs, browse::BrowseArgs, completion::CompletionArgs, issue::IssueArgs,
+    pipeline::PipelineArgs, pr::PrArgs, repo::RepoArgs,
 };
 use crate::factory;
 
@@ -59,6 +59,8 @@ enum Commands {
     Browse(BrowseArgs),
     /// Make an authenticated Bitbucket API request
     Api(ApiArgs),
+    /// Generate shell completion scripts
+    Completion(CompletionArgs),
 }
 
 /// Parse process arguments (auto-exits on `--version`/`--help`/parse errors).
@@ -110,6 +112,10 @@ pub fn dispatch(cli: Cli) -> anyhow::Result<()> {
             let ctx = factory::build_context(repo_override)?;
             crate::commands::api::run(&ctx, args)
         }
+        Some(Commands::Completion(args)) => {
+            let ctx = factory::build_context(repo_override)?;
+            crate::commands::completion::run(&ctx, args)
+        }
         None => {
             let mut cmd = Cli::command();
             cmd.print_help()?;
@@ -146,5 +152,16 @@ mod tests {
         Cli::try_parse_from(["bb", "pr", "list", "-R", "acme/widgets"]).expect("pr list -R");
         Cli::try_parse_from(["bb", "repo", "clone", "-R", "acme/widgets", "acme/widgets"])
             .expect("repo clone -R");
+    }
+
+    /// `completion -s <shell>` parses a known shell and rejects an unknown one.
+    #[test]
+    fn completion_shell_value_parses_and_validates() {
+        Cli::try_parse_from(["bb", "completion", "-s", "fish"]).expect("known shell parses");
+        Cli::try_parse_from(["bb", "completion"]).expect("shell is optional at parse time");
+        assert!(
+            Cli::try_parse_from(["bb", "completion", "-s", "tcsh"]).is_err(),
+            "unknown shell should be a parse error"
+        );
     }
 }

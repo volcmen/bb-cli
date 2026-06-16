@@ -19,6 +19,7 @@ bb-config.workspace = true
 bb-git.workspace = true
 anyhow.workspace = true
 clap.workspace = true
+clap_complete.workspace = true
 inquire.workspace = true
 base64.workspace = true
 getrandom.workspace = true
