@@ -4,6 +4,8 @@
 use bb_api::models::PullRequest;
 use bb_core::ColorScheme;
 
+use crate::render::{pad, sanitize};
+
 /// Render a list of PRs for a TTY: a header row plus aligned, colored columns.
 #[must_use]
 pub fn render_table(prs: &[PullRequest], cs: ColorScheme) -> String {
@@ -13,9 +15,9 @@ pub fn render_table(prs: &[PullRequest], cs: ColorScheme) -> String {
         .map(|pr| {
             [
                 format!("#{}", pr.id),
-                sanitize(&pr.title.clone().unwrap_or_default()),
+                sanitize(pr.title.as_deref().unwrap_or_default()),
                 branch_pair(pr),
-                pr.state.clone().unwrap_or_default(),
+                pr.state.as_deref().unwrap_or_default().to_owned(),
             ]
         })
         .collect();
@@ -69,9 +71,9 @@ pub fn render_tsv(prs: &[PullRequest]) -> String {
         out.push_str(&format!(
             "{}\t{}\t{}\t{}\n",
             pr.id,
-            sanitize(&pr.title.clone().unwrap_or_default()),
+            sanitize(pr.title.as_deref().unwrap_or_default()),
             branch_pair(pr),
-            pr.state.clone().unwrap_or_default(),
+            pr.state.as_deref().unwrap_or_default().to_owned(),
         ));
     }
     out
@@ -85,12 +87,6 @@ fn branch_pair(pr: &PullRequest) -> String {
     )
 }
 
-/// Replace tab/CR/LF (which would corrupt TSV columns and table rows) with a
-/// single space, so a malicious or odd title/branch can't break the layout.
-fn sanitize(s: &str) -> String {
-    s.replace(['\t', '\r', '\n'], " ")
-}
-
 fn color_state(cs: ColorScheme, state: &str) -> String {
     match state {
         "OPEN" => cs.green(state),
@@ -98,16 +94,6 @@ fn color_state(cs: ColorScheme, state: &str) -> String {
         "DECLINED" | "SUPERSEDED" => cs.red(state),
         other => other.to_owned(),
     }
-}
-
-/// Right-pad `s` so its *visible* width (`plain_len`, ignoring ANSI codes)
-/// reaches `target`.
-fn pad(s: &str, plain_len: usize, target: usize) -> String {
-    let mut out = s.to_owned();
-    if plain_len < target {
-        out.push_str(&" ".repeat(target - plain_len));
-    }
-    out
 }
 
 #[cfg(test)]

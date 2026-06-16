@@ -227,8 +227,10 @@ fn resolve_reviewers(
 
     if !unresolved.is_empty() {
         return Err(FlagError::new(format!(
-            "could not resolve reviewer(s): {}",
-            unresolved.join(", ")
+            "could not resolve reviewer(s): {}. Each must be a member of workspace {} \
+             (matched by username, nickname, or account id).",
+            unresolved.join(", "),
+            repo.workspace(),
         ))
         .into());
     }

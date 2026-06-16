@@ -11,6 +11,7 @@ use bb_core::{AuthError, ColorScheme, Context, SilentError};
 use clap::Args;
 
 use crate::auth;
+use crate::render::{pad, sanitize};
 
 /// JSON fields a check (commit status) can be projected to with `--json`.
 const FIELDS: &[&str] = &["key", "name", "state", "url"];
@@ -168,22 +169,6 @@ fn color_state(cs: ColorScheme, state: &str) -> String {
         "FAILED" => cs.red(state),
         other => cs.yellow(other),
     }
-}
-
-/// Replace tab/CR/LF with a single space so a malicious or odd cell can't break
-/// the TSV columns / table rows.
-fn sanitize(s: &str) -> String {
-    s.replace(['\t', '\r', '\n'], " ")
-}
-
-/// Right-pad `s` so its *visible* width (`plain_len`, ignoring ANSI codes)
-/// reaches `target`.
-fn pad(s: &str, plain_len: usize, target: usize) -> String {
-    let mut out = s.to_owned();
-    if plain_len < target {
-        out.push_str(&" ".repeat(target - plain_len));
-    }
-    out
 }
 
 #[cfg(test)]

@@ -6,6 +6,7 @@ use bb_core::{AuthError, ColorScheme, Context, FlagError};
 use clap::Args;
 
 use crate::auth;
+use crate::render::{pad, percent_encode, sanitize};
 
 /// JSON fields an issue can be projected to with `--json`.
 const FIELDS: &[&str] = &[
@@ -50,7 +51,7 @@ pub fn run(ctx: &Context, args: ListArgs) -> anyhow::Result<()> {
     if let Some(state) = &args.state {
         path.push_str(&format!(
             "&q={}",
-            urlencode_query(&format!("state=\"{state}\""))
+            percent_encode(&format!("state=\"{state}\""))
         ));
     }
 
@@ -156,17 +157,11 @@ fn render_tsv(issues: &[Issue]) -> String {
             "{}\t{}\t{}\t{}\n",
             i.id,
             sanitize(i.title.as_deref().unwrap_or_default()),
-            i.state.clone().unwrap_or_default(),
-            i.kind.clone().unwrap_or_default(),
+            i.state.as_deref().unwrap_or_default().to_owned(),
+            i.kind.as_deref().unwrap_or_default().to_owned(),
         ));
     }
     out
-}
-
-/// Replace tab/CR/LF (which would corrupt TSV columns and table rows) with a
-/// single space, so an odd title can't break the layout.
-fn sanitize(s: &str) -> String {
-    s.replace(['\t', '\r', '\n'], " ")
 }
 
 fn color_state(cs: ColorScheme, state: &str) -> String {
@@ -177,30 +172,6 @@ fn color_state(cs: ColorScheme, state: &str) -> String {
         "invalid" | "duplicate" | "wontfix" => cs.red(state),
         other => other.to_owned(),
     }
-}
-
-/// Right-pad `s` so its *visible* width (`plain_len`, ignoring ANSI codes)
-/// reaches `target`.
-fn pad(s: &str, plain_len: usize, target: usize) -> String {
-    let mut out = s.to_owned();
-    if plain_len < target {
-        out.push_str(&" ".repeat(target - plain_len));
-    }
-    out
-}
-
-/// Percent-encode a `q=` value (spaces, quotes, `=`, ...).
-fn urlencode_query(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }
 
 #[cfg(test)]

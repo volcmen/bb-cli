@@ -6,6 +6,7 @@ use bb_core::{AuthError, ColorScheme, Context, FlagError};
 use clap::Args;
 
 use crate::auth;
+use crate::render::sanitize;
 
 /// JSON fields a pipeline can be projected to with `--json`.
 const FIELDS: &[&str] = &["uuid", "build_number", "state", "target", "created_on"];
@@ -162,11 +163,6 @@ fn render_step(step: &PipelineStep, cs: ColorScheme, color: bool) -> String {
     } else {
         format!("- {name}  {}", status.join(" · "))
     }
-}
-
-/// Replace tab/CR/LF with a single space so an odd ref/name can't break layout.
-fn sanitize(s: &str) -> String {
-    s.replace(['\t', '\r', '\n'], " ")
 }
 
 /// Color a pipeline/step result: SUCCESSFUL green, FAILED/ERROR red, else gray.

@@ -6,6 +6,7 @@ use bb_core::{AuthError, Context, FlagError, RepoId};
 use clap::Args;
 
 use crate::auth;
+use crate::render::sanitize;
 
 /// JSON fields a repository can be projected to with `--json`.
 const FIELDS: &[&str] = &[
@@ -120,11 +121,6 @@ fn render_view(repo: &RepoId, r: &Repository) -> String {
         out.push_str(&format!("{url}\n"));
     }
     out
-}
-
-/// Collapse control characters that would corrupt terminal output.
-fn sanitize(s: &str) -> String {
-    s.replace(['\t', '\r', '\n'], " ")
 }
 
 #[cfg(test)]

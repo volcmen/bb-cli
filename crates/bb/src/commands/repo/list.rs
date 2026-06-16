@@ -6,6 +6,7 @@ use bb_core::{AuthError, ColorScheme, Context, FlagError};
 use clap::Args;
 
 use crate::auth;
+use crate::render::{pad, sanitize};
 
 /// JSON fields a repository can be projected to with `--json`.
 const FIELDS: &[&str] = &[
@@ -138,20 +139,6 @@ fn render_table(repos: &[Repository], cs: ColorScheme) -> String {
             }
         }
         out.push('\n');
-    }
-    out
-}
-
-/// Collapse control characters that would corrupt terminal/TSV output.
-fn sanitize(s: &str) -> String {
-    s.replace(['\t', '\r', '\n'], " ")
-}
-
-/// Pad `s` (whose visible width is `plain_len`) on the right to `target`.
-fn pad(s: &str, plain_len: usize, target: usize) -> String {
-    let mut out = s.to_owned();
-    if plain_len < target {
-        out.push_str(&" ".repeat(target - plain_len));
     }
     out
 }
