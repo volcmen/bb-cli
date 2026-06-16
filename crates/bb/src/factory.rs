@@ -26,7 +26,7 @@ pub fn build_context(repo_override: Option<RepoId>) -> Result<Context> {
     let config = crate::config::load()?;
     // Wrap the real transport so an expired OAuth token is refreshed and the
     // request retried transparently (seamless re-auth without re-running login).
-    let inner: Arc<dyn Transport> = Arc::new(ReqwestTransport::new(&user_agent()));
+    let inner: Arc<dyn Transport> = Arc::new(ReqwestTransport::new(&user_agent())?);
     let transport = Arc::new(crate::refresh::RefreshingTransport::new(
         inner,
         config.clone(),

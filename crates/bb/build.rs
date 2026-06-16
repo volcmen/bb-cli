@@ -33,31 +33,23 @@ fn main() {
 /// Tell cargo to re-run this build script when the git HEAD (or the ref it
 /// points to) changes, so the embedded commit SHA/date stay current.
 fn rerun_on_git_head() {
-    let manifest = match std::env::var("CARGO_MANIFEST_DIR") {
-        Ok(v) => v,
-        Err(_) => return,
-    };
-    // Workspace root is two levels up from `crates/bb`.
-    let git_dir = std::path::Path::new(&manifest).join("../../.git");
-    let head = git_dir.join("HEAD");
-    if !head.exists() {
-        return;
+    // Ask git itself where HEAD, the current branch ref, and packed-refs live.
+    // `git rev-parse --git-path` resolves these for ordinary checkouts, linked
+    // worktrees, AND submodules (where `.git` is a file), so we never
+    // reconstruct `.git` paths by hand. If git isn't available the calls return
+    // `None` and the rerun triggers are simply skipped.
+    if let Some(path) = git(&["rev-parse", "--git-path", "HEAD"]) {
+        println!("cargo:rerun-if-changed={path}");
     }
-    println!("cargo:rerun-if-changed={}", head.display());
-
-    // Follow a symbolic HEAD ("ref: refs/heads/<branch>") to its loose ref file.
-    if let Ok(contents) = std::fs::read_to_string(&head) {
-        if let Some(reference) = contents.strip_prefix("ref:").map(str::trim) {
-            let ref_path = git_dir.join(reference);
-            if ref_path.exists() {
-                println!("cargo:rerun-if-changed={}", ref_path.display());
-            }
+    if let Some(path) = git(&["rev-parse", "--git-path", "packed-refs"]) {
+        println!("cargo:rerun-if-changed={path}");
+    }
+    // Watch the loose ref HEAD points at, so a *commit* on the current branch
+    // (not just a checkout) refreshes the embedded SHA.
+    if let Some(reference) = git(&["symbolic-ref", "-q", "HEAD"]) {
+        if let Some(path) = git(&["rev-parse", "--git-path", &reference]) {
+            println!("cargo:rerun-if-changed={path}");
         }
-    }
-    // Cover the case where the branch ref is packed rather than a loose file.
-    let packed = git_dir.join("packed-refs");
-    if packed.exists() {
-        println!("cargo:rerun-if-changed={}", packed.display());
     }
 }
 
