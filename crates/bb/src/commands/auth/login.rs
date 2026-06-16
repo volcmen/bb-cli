@@ -160,57 +160,59 @@ fn oauth_login(ctx: &Context, host: &str, args: &LoginArgs) -> anyhow::Result<()
         .into());
     }
 
-    // Fixed local callback port so the redirect_uri matches the consumer's
-    // registered callback URL (Bitbucket validates the redirect). Override with
-    // BB_OAUTH_PORT if 8765 is taken (and match it in the consumer config).
-    let port: u16 = std::env::var("BB_OAUTH_PORT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(8765);
-    let redirect_uri = format!("http://localhost:{port}/callback");
-
-    // Consumer credentials: --client-id/--secret flags, then env, then stored config.
+    // Consumer credentials: --client-id/--secret flags → env → embedded
+    // (baked at build time) → previously-stored config.
     let env_nonempty = |k: &str| std::env::var(k).ok().filter(|s| !s.is_empty());
     let client_id = args
         .client_id
         .clone()
         .or_else(|| env_nonempty("BB_OAUTH_CLIENT_ID"))
+        .or_else(embedded_client_id)
         .or_else(|| ctx.config.get(host, "oauth_client_id"));
     let client_secret = args
         .client_secret
         .clone()
         .or_else(|| env_nonempty("BB_OAUTH_CLIENT_SECRET"))
+        .or_else(embedded_client_secret)
         .or_else(|| ctx.config.get(host, "oauth_client_secret"));
 
     let (Some(client_id), Some(client_secret)) = (client_id, client_secret) else {
-        return Err(FlagError::new(format!(
+        return Err(FlagError::new(
             "OAuth login (--web) needs a one-time OAuth consumer:\n\
              1. Open https://bitbucket.org/<workspace>/workspace/settings/api and click \"Add consumer\".\n\
-             2. Set Callback URL to exactly: {redirect_uri}\n\
-             3. Grant permissions: Account (read), Repositories (read/write), Pull requests (read/write).\n\
-             4. Save, then copy the Key and Secret and run:\n\
+             2. Set the Callback URL to exactly: http://127.0.0.1/callback\n\
+             3. Grant permissions: Account, Repositories, Pull requests (read/write as needed).\n\
+             4. Save, copy the Key and Secret, then run:\n\
              \u{20}     bb auth login --web --client-id <KEY> --client-secret <SECRET>\n\
-             bb stores them, so afterwards plain `bb auth login --web` works. \
-             (Or export BB_OAUTH_CLIENT_ID / BB_OAUTH_CLIENT_SECRET.)"
-        ))
+             bb stores them, so later `bb auth login --web` just works. \
+             (Or export BB_OAUTH_CLIENT_ID / BB_OAUTH_CLIENT_SECRET, or bake them in at build time.)"
+        )
         .into());
     };
 
-    let listener = TcpListener::bind(("127.0.0.1", port)).map_err(|e| {
-        FlagError::new(format!(
-            "could not bind 127.0.0.1:{port} for the OAuth callback ({e}); \
-             set BB_OAUTH_PORT to a free port and use it in the consumer's callback URL."
-        ))
-    })?;
+    // Loopback callback on a random port. Bitbucket does RFC 8252 loopback
+    // matching for 127.0.0.1, so a consumer callback of `http://127.0.0.1/callback`
+    // matches any port — nothing to reserve, no conflicts.
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .map_err(|e| FlagError::new(format!("could not start the OAuth callback server: {e}")))?;
+    let port = listener
+        .local_addr()
+        .map_err(|e| FlagError::new(format!("could not read the callback port: {e}")))?
+        .port();
+    let redirect_uri = format!("http://127.0.0.1:{port}/callback");
 
-    // CSRF protection: a random opaque value echoed back on the callback.
+    // CSRF protection (state) + PKCE (S256) for defense-in-depth.
     let state = random_state()?;
+    let pkce = generate_pkce()?;
 
     let authorize_url = format!(
-        "https://bitbucket.org/site/oauth2/authorize?client_id={}&response_type=code&redirect_uri={}&state={}",
+        "https://bitbucket.org/site/oauth2/authorize\
+         ?client_id={}&response_type=code&redirect_uri={}&state={}\
+         &code_challenge={}&code_challenge_method=S256",
         url_encode(&client_id),
         url_encode(&redirect_uri),
         url_encode(&state),
+        url_encode(&pkce.challenge),
     );
 
     ctx.io
@@ -231,6 +233,7 @@ fn oauth_login(ctx: &Context, host: &str, args: &LoginArgs) -> anyhow::Result<()
         &client_secret,
         &code,
         &redirect_uri,
+        &pkce.verifier,
     )?;
 
     ctx.io
@@ -299,6 +302,40 @@ fn random_state() -> anyhow::Result<String> {
     Ok(s)
 }
 
+/// A PKCE verifier + its S256 challenge (RFC 7636).
+struct Pkce {
+    verifier: String,
+    challenge: String,
+}
+
+fn generate_pkce() -> anyhow::Result<Pkce> {
+    use base64::Engine as _;
+    use sha2::{Digest, Sha256};
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes).map_err(|e| anyhow::anyhow!(e))?;
+    let verifier = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(Sha256::digest(verifier.as_bytes()));
+    Ok(Pkce {
+        verifier,
+        challenge,
+    })
+}
+
+/// OAuth consumer credentials baked in at build time (see `build.rs`). `None`
+/// for source builds compiled without `BB_OAUTH_CLIENT_ID`/`SECRET` in the env.
+fn embedded_client_id() -> Option<String> {
+    option_env!("BB_EMBED_OAUTH_CLIENT_ID")
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+}
+
+fn embedded_client_secret() -> Option<String> {
+    option_env!("BB_EMBED_OAUTH_CLIENT_SECRET")
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+}
+
 /// The token-exchange response from Bitbucket's `/access_token` endpoint.
 #[derive(serde::Deserialize)]
 struct TokenResponse {
@@ -312,6 +349,7 @@ struct TokenResponse {
 ///
 /// Factored out so it can be unit-tested with a `FakeTransport` (no listener or
 /// browser involved).
+#[allow(clippy::too_many_arguments)]
 fn exchange_and_store(
     ctx: &Context,
     client: &BitbucketClient,
@@ -320,11 +358,13 @@ fn exchange_and_store(
     client_secret: &str,
     code: &str,
     redirect_uri: &str,
+    code_verifier: &str,
 ) -> anyhow::Result<String> {
     let form = TokenForm {
         grant_type: "authorization_code",
         code,
         redirect_uri,
+        code_verifier,
     };
     let basic = auth::basic_header(client_id, client_secret);
     let token: TokenResponse = post_form(
@@ -356,15 +396,17 @@ struct TokenForm<'a> {
     grant_type: &'a str,
     code: &'a str,
     redirect_uri: &'a str,
+    code_verifier: &'a str,
 }
 
 impl TokenForm<'_> {
     fn encode(&self) -> String {
         format!(
-            "grant_type={}&code={}&redirect_uri={}",
+            "grant_type={}&code={}&redirect_uri={}&code_verifier={}",
             url_encode(self.grant_type),
             url_encode(self.code),
             url_encode(self.redirect_uri),
+            url_encode(self.code_verifier),
         )
     }
 }
@@ -636,7 +678,8 @@ mod tests {
             "cid",
             "csecret",
             "the-code",
-            "http://localhost:5000/callback",
+            "http://127.0.0.1:5000/callback",
+            "pkce-verifier-xyz",
         )
         .unwrap();
 
@@ -664,6 +707,11 @@ mod tests {
         let body = String::from_utf8_lossy(exch.body.as_deref().unwrap_or_default());
         assert!(body.contains("grant_type=authorization_code"));
         assert!(body.contains("code=the-code"));
+        assert!(body.contains("code_verifier=pkce-verifier-xyz"));
+        assert_eq!(
+            cfg.get("bitbucket.org", "oauth_client_secret").as_deref(),
+            Some("csecret")
+        );
         assert!(exch
             .headers
             .get("Authorization")
