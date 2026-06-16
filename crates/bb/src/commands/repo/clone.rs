@@ -10,7 +10,9 @@ use crate::auth;
 #[derive(Args, Debug)]
 pub struct CloneArgs {
     /// Repository as WORKSPACE/SLUG
-    #[arg(value_name = "WORKSPACE/SLUG")]
+    // `id = "source"` avoids colliding with the global `-R/--repo` (clap id
+    // `repo`), which otherwise shadows the global short under this subcommand.
+    #[arg(id = "source", value_name = "WORKSPACE/SLUG")]
     pub repo: String,
     /// Target directory (defaults to the repo slug)
     #[arg(value_name = "DIRECTORY")]

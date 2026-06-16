@@ -118,3 +118,33 @@ pub fn dispatch(cli: Cli) -> anyhow::Result<()> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `repo view` has a positional repository; the global `-R/--repo` must
+    /// still parse *after* the subcommand. Regression for the clap id collision
+    /// (positional id `repo` vs the global `repo`) that made `-R` "unexpected".
+    #[test]
+    fn global_repo_flag_parses_after_repo_view() {
+        let cli = Cli::try_parse_from(["bb", "repo", "view", "-R", "acme/widgets"])
+            .expect("`-R` should parse after `repo view`");
+        assert_eq!(cli.repo.as_deref(), Some("acme/widgets"));
+    }
+
+    /// The `repo view` positional still works on its own.
+    #[test]
+    fn repo_view_positional_parses() {
+        Cli::try_parse_from(["bb", "repo", "view", "acme/widgets"])
+            .expect("positional WORKSPACE/SLUG should parse");
+    }
+
+    /// `-R` is accepted across the other command families too (sanity).
+    #[test]
+    fn global_repo_flag_parses_after_pr_and_clone() {
+        Cli::try_parse_from(["bb", "pr", "list", "-R", "acme/widgets"]).expect("pr list -R");
+        Cli::try_parse_from(["bb", "repo", "clone", "-R", "acme/widgets", "acme/widgets"])
+            .expect("repo clone -R");
+    }
+}

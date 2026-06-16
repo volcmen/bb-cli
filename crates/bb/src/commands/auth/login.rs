@@ -149,6 +149,11 @@ fn basic_login(ctx: &Context, host: &str, args: &LoginArgs) -> anyhow::Result<()
 
 // ----- OAuth 2.0 (--web) --------------------------------------------------
 
+/// OAuth scopes requested at authorize time. Bitbucket grants the intersection
+/// with the consumer's configured permissions; we request the full Cloud set so
+/// every `bb` command works once authorized.
+const OAUTH_SCOPES: &str = "account repository pullrequest issue pipeline webhook";
+
 fn oauth_login(ctx: &Context, host: &str, args: &LoginArgs) -> anyhow::Result<()> {
     // OAuth endpoints are Bitbucket Cloud-only.
     if host != bb_core::DEFAULT_HOST {
@@ -208,11 +213,12 @@ fn oauth_login(ctx: &Context, host: &str, args: &LoginArgs) -> anyhow::Result<()
     let authorize_url = format!(
         "https://bitbucket.org/site/oauth2/authorize\
          ?client_id={}&response_type=code&redirect_uri={}&state={}\
-         &code_challenge={}&code_challenge_method=S256",
+         &code_challenge={}&code_challenge_method=S256&scope={}",
         url_encode(&client_id),
         url_encode(&redirect_uri),
         url_encode(&state),
         url_encode(&pkce.challenge),
+        url_encode(OAUTH_SCOPES),
     );
 
     ctx.io
@@ -444,10 +450,22 @@ fn post_form<T: serde::de::DeserializeOwned>(
 
     let resp = transport.execute(req)?;
     if !resp.is_success() {
+        // Surface Bitbucket's error_description so live failures are diagnosable
+        // (e.g. invalid_grant, redirect_uri_mismatch) instead of a bare status.
+        let detail = String::from_utf8_lossy(&resp.body);
+        let detail = detail.trim();
+        let message = if detail.is_empty() {
+            format!("token exchange failed with status {}", resp.status)
+        } else {
+            format!(
+                "token exchange failed with status {}: {detail}",
+                resp.status
+            )
+        };
         return Err(ApiError::Http {
             status: resp.status,
             url: url.to_owned(),
-            message: format!("token exchange failed with status {}", resp.status),
+            message,
             errors: Vec::new(),
         }
         .into());

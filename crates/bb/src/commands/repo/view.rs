@@ -21,7 +21,10 @@ const FIELDS: &[&str] = &[
 #[derive(Args, Debug)]
 pub struct ViewArgs {
     /// Repository as WORKSPACE/SLUG (defaults to the current repo)
-    #[arg(value_name = "WORKSPACE/SLUG")]
+    // `id = "target"` avoids colliding with the global `-R/--repo` (clap id
+    // `repo`); a same-id local arg shadows the global's short, which made
+    // `bb repo view -R …` error with "unexpected argument '-R'".
+    #[arg(id = "target", value_name = "WORKSPACE/SLUG")]
     pub repo: Option<String>,
     /// Open the repository in the browser
     #[arg(long)]
