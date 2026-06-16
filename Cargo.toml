@@ -40,6 +40,7 @@ inquire = { version = "0.7", features = ["editor"] }
 etcetera = "0.8"
 base64 = "0.22"
 getrandom = "0.2"
+sha2 = "0.10"
 tinytemplate = "1.2"
 which = "7"
 url = "2"
