@@ -1,7 +1,8 @@
 //! `bb auth login` — Basic (token paste) and OAuth 2.0 (`--web`).
 
-use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::io::{ErrorKind, Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::time::{Duration, Instant};
 
 use bb_api::models::User;
 use bb_api::BitbucketClient;
@@ -228,7 +229,7 @@ fn oauth_login(ctx: &Context, host: &str, args: &LoginArgs) -> anyhow::Result<()
     let _ = ctx.browser.browse(&authorize_url);
 
     // Wait for the redirect carrying the auth code (and verify the CSRF state).
-    let code = wait_for_code(&listener, &state)?;
+    let code = wait_for_code(&listener, &state, CALLBACK_TIMEOUT)?;
 
     let client = BitbucketClient::new(ctx.transport.clone(), None);
     let label = exchange_and_store(
@@ -247,11 +248,22 @@ fn oauth_login(ctx: &Context, host: &str, args: &LoginArgs) -> anyhow::Result<()
     Ok(())
 }
 
-/// Accept one connection on `listener`, parse the `code` and `state` query
-/// parameters from the HTTP GET request line, verify `state` matches the value
-/// we sent (CSRF protection), write a friendly response, and return the code.
-fn wait_for_code(listener: &TcpListener, expected_state: &str) -> anyhow::Result<String> {
-    let (mut stream, _) = listener.accept()?;
+/// How long [`wait_for_code`] waits for the browser to hit the loopback callback
+/// before giving up, so `--web` cannot hang forever when the user never approves.
+const CALLBACK_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// Accept one connection on `listener` (giving up after `timeout`), parse the
+/// `code` and `state` query parameters from the HTTP GET request line, verify
+/// `state` matches the value we sent (CSRF protection), write a friendly
+/// response, and return the code.
+fn wait_for_code(
+    listener: &TcpListener,
+    expected_state: &str,
+    timeout: Duration,
+) -> anyhow::Result<String> {
+    let mut stream = accept_until(listener, timeout)?;
+    // Don't block forever on a stalled/partial request, either.
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
     let mut buf = [0u8; 4096];
     let n = stream.read(&mut buf)?;
     let request = String::from_utf8_lossy(&buf[..n]);
@@ -280,6 +292,33 @@ fn wait_for_code(listener: &TcpListener, expected_state: &str) -> anyhow::Result
     })?;
 
     Ok(code)
+}
+
+/// Accept a single connection, giving up with a [`FlagError`] after `timeout`.
+/// Uses non-blocking polling so a browser that never calls back can't hang `bb`.
+fn accept_until(listener: &TcpListener, timeout: Duration) -> anyhow::Result<TcpStream> {
+    listener.set_nonblocking(true)?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        match listener.accept() {
+            Ok((stream, _peer)) => {
+                // Restore blocking semantics for the (timeout-bounded) read.
+                stream.set_nonblocking(false)?;
+                return Ok(stream);
+            }
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err(FlagError::new(
+                        "timed out waiting for the OAuth callback; aborting login. \
+                         Re-run `bb auth login --web` and approve access in the browser.",
+                    )
+                    .into());
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
 }
 
 /// Extract a query parameter `key` from a request target like
@@ -734,6 +773,52 @@ mod tests {
             .headers
             .get("Authorization")
             .is_some_and(|h| h.starts_with("Basic ")));
+    }
+
+    #[test]
+    fn wait_for_code_times_out_without_a_callback() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        // No client ever connects: must give up (not hang) and report a FlagError.
+        let err = wait_for_code(&listener, "state-xyz", Duration::from_millis(150)).unwrap_err();
+        let flag = err.downcast_ref::<FlagError>().expect("FlagError");
+        assert!(flag.to_string().contains("timed out"), "got: {flag}");
+    }
+
+    #[test]
+    fn wait_for_code_returns_code_on_matching_state() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        // Simulate the browser hitting the loopback redirect.
+        let client = std::thread::spawn(move || {
+            let mut s = TcpStream::connect(addr).unwrap();
+            s.write_all(b"GET /callback?code=the-code&state=state-xyz HTTP/1.1\r\n\r\n")
+                .unwrap();
+            // Drain the response so the server's write doesn't error.
+            let mut buf = [0u8; 256];
+            let _ = s.read(&mut buf);
+        });
+
+        let code = wait_for_code(&listener, "state-xyz", Duration::from_secs(5)).unwrap();
+        assert_eq!(code, "the-code");
+        client.join().unwrap();
+    }
+
+    #[test]
+    fn wait_for_code_rejects_state_mismatch() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = std::thread::spawn(move || {
+            let mut s = TcpStream::connect(addr).unwrap();
+            s.write_all(b"GET /callback?code=c&state=WRONG HTTP/1.1\r\n\r\n")
+                .unwrap();
+            let mut buf = [0u8; 256];
+            let _ = s.read(&mut buf);
+        });
+
+        let err = wait_for_code(&listener, "expected", Duration::from_secs(5)).unwrap_err();
+        let flag = err.downcast_ref::<FlagError>().expect("FlagError");
+        assert!(flag.to_string().contains("state mismatch"), "got: {flag}");
+        client.join().unwrap();
     }
 
     #[test]
