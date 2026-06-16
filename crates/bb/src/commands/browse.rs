@@ -2,6 +2,7 @@
 //! browser.
 
 use crate::core::{Context, FlagError};
+use crate::render::percent_encode;
 use clap::Args;
 
 #[derive(Args, Debug)]
@@ -91,24 +92,9 @@ pub fn run(ctx: &Context, args: BrowseArgs) -> anyhow::Result<()> {
 fn encode_branch_path(branch: &str) -> String {
     branch
         .split('/')
-        .map(encode_segment)
+        .map(percent_encode)
         .collect::<Vec<_>>()
         .join("/")
-}
-
-/// Minimal percent-encoding of a single path segment: the unreserved set passes
-/// through, everything else becomes `%XX`.
-fn encode_segment(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }
 
 #[cfg(test)]
