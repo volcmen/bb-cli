@@ -1,0 +1,22 @@
+# Injected into cargo-dist's `build-local-artifacts` job via
+# `github-build-setup` in dist-workspace.toml. Mirrors how bkt bakes its OAuth
+# consumer into release binaries (its release.yml passes BKT_OAUTH_* as env to
+# the build): export the repo secrets into $GITHUB_ENV so `build.rs` embeds them
+# and `bb auth login --web` works out of the box in the published binaries.
+#
+# Graceful when unset (forks/PRs, or before a consumer is registered): the
+# release still builds, just without an embedded consumer (then `--web` needs a
+# user-provided consumer, exactly like a `cargo install` build).
+- name: Embed OAuth consumer for `bb auth login --web` (if configured)
+  shell: bash
+  env:
+    BB_OAUTH_CLIENT_ID: ${{ secrets.BB_OAUTH_CLIENT_ID }}
+    BB_OAUTH_CLIENT_SECRET: ${{ secrets.BB_OAUTH_CLIENT_SECRET }}
+  run: |
+    if [ -n "$BB_OAUTH_CLIENT_ID" ] && [ -n "$BB_OAUTH_CLIENT_SECRET" ]; then
+      echo "BB_OAUTH_CLIENT_ID=$BB_OAUTH_CLIENT_ID" >> "$GITHUB_ENV"
+      echo "BB_OAUTH_CLIENT_SECRET=$BB_OAUTH_CLIENT_SECRET" >> "$GITHUB_ENV"
+      echo "::notice::Embedding OAuth consumer into release binaries (--web ready)."
+    else
+      echo "::notice::BB_OAUTH_* secrets not set; building without an embedded consumer."
+    fi
