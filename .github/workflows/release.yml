@@ -127,6 +127,19 @@ jobs:
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           fi
+      - name: "Embed OAuth consumer for `bb auth login --web` (if configured)"
+        run: |
+          if [ -n "$BB_OAUTH_CLIENT_ID" ] && [ -n "$BB_OAUTH_CLIENT_SECRET" ]; then
+            echo "BB_OAUTH_CLIENT_ID=$BB_OAUTH_CLIENT_ID" >> "$GITHUB_ENV"
+            echo "BB_OAUTH_CLIENT_SECRET=$BB_OAUTH_CLIENT_SECRET" >> "$GITHUB_ENV"
+            echo "::notice::Embedding OAuth consumer into release binaries (--web ready)."
+          else
+            echo "::notice::BB_OAUTH_* secrets not set; building without an embedded consumer."
+          fi
+        shell: "bash"
+        env:
+          "BB_OAUTH_CLIENT_ID": "${{ secrets.BB_OAUTH_CLIENT_ID }}"
+          "BB_OAUTH_CLIENT_SECRET": "${{ secrets.BB_OAUTH_CLIENT_SECRET }}"
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
       # Get the dist-manifest

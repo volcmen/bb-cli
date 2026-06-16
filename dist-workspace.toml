@@ -17,3 +17,6 @@ install-path = "CARGO_HOME"
 hosting = "github"
 # Whether to install an updater program
 install-updater = false
+# Extra build steps: export BB_OAUTH_* (repo secrets) into the build env so
+# build.rs embeds the OAuth consumer into release binaries (`--web` works OOTB).
+github-build-setup = "../oauth-build-setup.yml"
