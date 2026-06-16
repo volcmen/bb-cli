@@ -18,8 +18,12 @@ impl ReqwestTransport {
     /// Panics only if the TLS backend fails to initialize, which is fatal.
     #[must_use]
     pub fn new(user_agent: &str) -> Self {
+        // Bound every request so `bb` can never hang forever on a dead or slow
+        // server: a total deadline plus a tighter connect deadline.
         let client = reqwest::blocking::Client::builder()
             .user_agent(user_agent.to_owned())
+            .timeout(std::time::Duration::from_secs(30))
+            .connect_timeout(std::time::Duration::from_secs(10))
             .build()
             .expect("failed to build HTTP client");
         Self { client }
