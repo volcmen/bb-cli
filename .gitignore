@@ -5,3 +5,5 @@
 /references
 /.env
 .env
+# Local OAuth consumer creds baked in at build time (build.rs). NEVER commit.
+/.cargo/config.toml

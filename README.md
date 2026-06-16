@@ -30,10 +30,15 @@ bb pr list                    # list open PRs for the current repo
 
 - **Atlassian API token** — `bb auth login --auth-type api_token` (username = your account email).
 - **App password** — `bb auth login --auth-type app_password`.
-- **OAuth 2.0** — `bb auth login --web`. Bitbucket ships no public OAuth client, so
-  register a consumer at `https://bitbucket.org/<workspace>/workspace/settings/api`
-  (callback `http://localhost:<port>/callback`) and export `BB_OAUTH_CLIENT_ID` /
-  `BB_OAUTH_CLIENT_SECRET`.
+- **OAuth 2.0** — `bb auth login --web` (browser, PKCE). Release binaries that
+  embed an OAuth consumer log in out of the box; the callback is a loopback
+  `http://127.0.0.1/<random-port>/callback` (RFC 8252, so the consumer's callback
+  is just `http://127.0.0.1/callback`). Source builds without an embedded consumer
+  need one: register it at `https://bitbucket.org/<workspace>/workspace/settings/api`
+  (callback `http://127.0.0.1/callback`), then pass `--client-id`/`--client-secret`,
+  export `BB_OAUTH_CLIENT_ID`/`BB_OAUTH_CLIENT_SECRET`, or bake them in at build time
+  (set those two env vars when running `cargo build` — `build.rs` embeds them). bb
+  stores the consumer after the first login, so later `bb auth login --web` just works.
 
 Pipe a token non-interactively with `--with-token`:
 
