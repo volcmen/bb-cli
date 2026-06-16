@@ -12,7 +12,7 @@ impl Write for SharedBuf {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         self.0
             .lock()
-            .expect("buffer poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .extend_from_slice(buf);
         Ok(buf.len())
     }
@@ -33,13 +33,25 @@ impl TestBuffers {
     /// Everything written to stdout so far, as a string.
     #[must_use]
     pub fn stdout_string(&self) -> String {
-        String::from_utf8_lossy(&self.out.lock().expect("buffer poisoned")).into_owned()
+        String::from_utf8_lossy(
+            &self
+                .out
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+        .into_owned()
     }
 
     /// Everything written to stderr so far, as a string.
     #[must_use]
     pub fn stderr_string(&self) -> String {
-        String::from_utf8_lossy(&self.err.lock().expect("buffer poisoned")).into_owned()
+        String::from_utf8_lossy(
+            &self
+                .err
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+        .into_owned()
     }
 }
 
@@ -110,19 +122,28 @@ impl IoStreams {
 
     /// Write to stdout (no trailing newline).
     pub fn print(&self, s: &str) {
-        let mut o = self.out.lock().expect("stdout poisoned");
+        let mut o = self
+            .out
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _ = o.write_all(s.as_bytes());
     }
 
     /// Write a line to stdout.
     pub fn println(&self, s: &str) {
-        let mut o = self.out.lock().expect("stdout poisoned");
+        let mut o = self
+            .out
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _ = writeln!(o, "{s}");
     }
 
     /// Write a line to stderr.
     pub fn eprintln(&self, s: &str) {
-        let mut e = self.err.lock().expect("stderr poisoned");
+        let mut e = self
+            .err
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _ = writeln!(e, "{s}");
     }
 
@@ -134,7 +155,7 @@ impl IoStreams {
         let mut buf = String::new();
         self.input
             .lock()
-            .expect("stdin poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .read_to_string(&mut buf)?;
         Ok(buf)
     }

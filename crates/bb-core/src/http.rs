@@ -30,12 +30,40 @@ impl Method {
 }
 
 /// An outbound HTTP request, independent of any concrete client.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct HttpRequest {
     pub method: Method,
     pub url: String,
     pub headers: BTreeMap<String, String>,
     pub body: Option<Vec<u8>>,
+}
+
+// Manual Debug so a stray `{:?}`/log can never leak the `Authorization` header
+// (bearer token or Basic credentials) or a request body.
+impl std::fmt::Debug for HttpRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let headers: BTreeMap<&str, &str> = self
+            .headers
+            .iter()
+            .map(|(k, v)| {
+                let value = if k.eq_ignore_ascii_case("authorization") {
+                    "<redacted>"
+                } else {
+                    v.as_str()
+                };
+                (k.as_str(), value)
+            })
+            .collect();
+        f.debug_struct("HttpRequest")
+            .field("method", &self.method)
+            .field("url", &self.url)
+            .field("headers", &headers)
+            .field(
+                "body",
+                &self.body.as_ref().map(|b| format!("<{} bytes>", b.len())),
+            )
+            .finish()
+    }
 }
 
 impl HttpRequest {
@@ -81,5 +109,31 @@ impl HttpResponse {
     #[must_use]
     pub fn body_str(&self) -> Cow<'_, str> {
         String::from_utf8_lossy(&self.body)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_redacts_authorization_and_body() {
+        let req = HttpRequest::new(Method::Post, "https://api.bitbucket.org/2.0/user")
+            .header("Authorization", "Bearer super-secret-token")
+            .header("Accept", "application/json")
+            .body(b"grant_type=authorization_code&code=abc".to_vec());
+        let shown = format!("{req:?}");
+        assert!(
+            !shown.contains("super-secret-token"),
+            "token leaked: {shown}"
+        );
+        assert!(shown.contains("<redacted>"), "missing redaction: {shown}");
+        // Non-secret headers still print; the body is summarized, not dumped.
+        assert!(shown.contains("application/json"));
+        assert!(!shown.contains("grant_type"), "body leaked: {shown}");
+        assert!(
+            shown.contains("bytes>"),
+            "body should be byte-counted: {shown}"
+        );
     }
 }

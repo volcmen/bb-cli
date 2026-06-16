@@ -11,7 +11,7 @@ use clap::Args;
 
 use crate::auth;
 
-#[derive(Args, Debug)]
+#[derive(Args)]
 pub struct LoginArgs {
     /// The Bitbucket host (default: bitbucket.org)
     #[arg(long)]
@@ -34,6 +34,25 @@ pub struct LoginArgs {
     /// OAuth consumer secret for `--web` (else $BB_OAUTH_CLIENT_SECRET, else stored)
     #[arg(long)]
     pub client_secret: Option<String>,
+}
+
+// Manual Debug so the OAuth consumer secret is never printed via a stray
+// `{:?}`/log. Other fields (incl. the non-secret client_id) print normally.
+impl std::fmt::Debug for LoginArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoginArgs")
+            .field("hostname", &self.hostname)
+            .field("web", &self.web)
+            .field("with_token", &self.with_token)
+            .field("username", &self.username)
+            .field("auth_type", &self.auth_type)
+            .field("client_id", &self.client_id)
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 /// Run `bb auth login`.
