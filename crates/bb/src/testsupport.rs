@@ -7,7 +7,7 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use bb_core::{
+use crate::core::{
     Browser, ConfigProvider, Context, GitClient, IoStreams, PromptError, Prompter, TestBuffers,
     Transport,
 };

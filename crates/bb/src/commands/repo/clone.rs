@@ -1,8 +1,8 @@
 //! `bb repo clone` — clone a Bitbucket repository via `git`.
 
-use bb_api::models::Repository;
-use bb_api::BitbucketClient;
-use bb_core::{AuthError, Context, FlagError, RepoId};
+use crate::api::models::Repository;
+use crate::api::BitbucketClient;
+use crate::core::{AuthError, Context, FlagError, RepoId};
 use clap::Args;
 
 use crate::auth;
@@ -25,7 +25,7 @@ pub struct CloneArgs {
 /// Returns [`AuthError`] (exit 4) if not authenticated for the repo's host,
 /// [`FlagError`] (exit 1) for a malformed target, when the repository is not
 /// found, or when no clone URL is available; propagates
-/// [`ApiError`](bb_core::ApiError) and [`GitError`](bb_core::GitError).
+/// [`ApiError`](crate::core::ApiError) and [`GitError`](crate::core::GitError).
 pub fn run(ctx: &Context, args: CloneArgs) -> anyhow::Result<()> {
     let repo: RepoId = args
         .repo
@@ -80,10 +80,10 @@ pub fn run(ctx: &Context, args: CloneArgs) -> anyhow::Result<()> {
 mod tests {
     use std::sync::Arc;
 
-    use bb_api::testing::FakeTransport;
-    use bb_config::FileConfig;
-    use bb_core::{ConfigProvider, GitClient, Method, Transport};
-    use bb_git::{ShellGit, StubRunner};
+    use crate::api::testing::FakeTransport;
+    use crate::config::FileConfig;
+    use crate::core::{ConfigProvider, GitClient, Method, Transport};
+    use crate::git::{ShellGit, StubRunner};
 
     use super::*;
     use crate::testsupport::{test_context, ScriptedPrompter};

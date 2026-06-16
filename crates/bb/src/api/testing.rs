@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-use bb_core::{ApiError, HttpRequest, HttpResponse, Method, Transport};
+use crate::core::{ApiError, HttpRequest, HttpResponse, Method, Transport};
 
 /// Decides whether a stub applies to a request.
 pub type Matcher = Box<dyn Fn(&HttpRequest) -> bool + Send + Sync>;

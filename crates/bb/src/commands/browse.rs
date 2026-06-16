@@ -1,7 +1,7 @@
 //! `bb browse` — open a repository, pull request, branch, or commit in the
 //! browser.
 
-use bb_core::{Context, FlagError};
+use crate::core::{Context, FlagError};
 use clap::Args;
 
 #[derive(Args, Debug)]
@@ -33,7 +33,7 @@ pub struct BrowseArgs {
 /// # Errors
 /// Returns [`FlagError`] if more than one target is given, or if the positional
 /// pull-request argument is not a valid number. Propagates
-/// [`GitError`](bb_core::GitError) from repo / current-branch resolution.
+/// [`GitError`](crate::core::GitError) from repo / current-branch resolution.
 pub fn run(ctx: &Context, args: BrowseArgs) -> anyhow::Result<()> {
     let repo = ctx.base_repo()?;
     let base = format!(
@@ -115,10 +115,10 @@ fn encode_segment(s: &str) -> String {
 mod tests {
     use std::sync::Arc;
 
-    use bb_api::testing::FakeTransport;
-    use bb_config::FileConfig;
-    use bb_core::{ConfigProvider, Context, GitClient, IoStreams, Prompter, RepoId, Transport};
-    use bb_git::{ShellGit, StubRunner};
+    use crate::api::testing::FakeTransport;
+    use crate::config::FileConfig;
+    use crate::core::{ConfigProvider, Context, GitClient, IoStreams, Prompter, RepoId, Transport};
+    use crate::git::{ShellGit, StubRunner};
 
     use super::*;
     use crate::testsupport::{RecordingBrowser, ScriptedPrompter};
@@ -129,7 +129,7 @@ mod tests {
     fn ctx_with(
         browser: Arc<RecordingBrowser>,
         runner: Arc<StubRunner>,
-    ) -> (Context, bb_core::TestBuffers) {
+    ) -> (Context, crate::core::TestBuffers) {
         let (io, bufs) = IoStreams::test();
         let transport: Arc<dyn Transport> = Arc::new(FakeTransport::new());
         let git: Arc<dyn GitClient> = Arc::new(ShellGit::new(runner));

@@ -1,7 +1,7 @@
 //! `bb issue view` — show an issue's details, or open it in the browser.
 
-use bb_api::BitbucketClient;
-use bb_core::{AuthError, ColorScheme, Context, FlagError};
+use crate::api::BitbucketClient;
+use crate::core::{AuthError, ColorScheme, Context, FlagError};
 use clap::Args;
 
 use crate::auth;
@@ -28,7 +28,7 @@ pub struct ViewArgs {
 /// # Errors
 /// Returns [`AuthError`] (exit 4) if not authenticated for the repo's host,
 /// [`FlagError`] (exit 1) for a malformed id or when the issue is not found,
-/// and propagates [`ApiError`](bb_core::ApiError) from the lookup.
+/// and propagates [`ApiError`](crate::core::ApiError) from the lookup.
 pub fn run(ctx: &Context, args: ViewArgs) -> anyhow::Result<()> {
     let repo = ctx.base_repo()?;
     let host = repo.host().to_owned();
@@ -51,7 +51,7 @@ pub fn run(ctx: &Context, args: ViewArgs) -> anyhow::Result<()> {
         args.id,
     );
 
-    let issue: bb_api::Issue = match client.get(&path) {
+    let issue: crate::api::Issue = match client.get(&path) {
         Ok(issue) => issue,
         Err(e) if e.is_not_found() => {
             return Err(FlagError::new(format!("issue #{} not found", args.id)).into());
@@ -81,7 +81,7 @@ pub fn run(ctx: &Context, args: ViewArgs) -> anyhow::Result<()> {
 }
 
 /// Render a single issue's details. `color` gates state coloring (TTY only).
-fn render_view(issue: &bb_api::Issue, cs: ColorScheme, color: bool) -> String {
+fn render_view(issue: &crate::api::Issue, cs: ColorScheme, color: bool) -> String {
     let title = issue.title.as_deref().unwrap_or("");
     let mut out = format!("#{} {}\n", issue.id, title);
 
@@ -132,10 +132,10 @@ fn color_state(cs: ColorScheme, state: &str) -> String {
 mod tests {
     use std::sync::Arc;
 
-    use bb_api::testing::FakeTransport;
-    use bb_config::FileConfig;
-    use bb_core::{ConfigProvider, GitClient, Method, RepoId, Transport};
-    use bb_git::{ShellGit, StubRunner};
+    use crate::api::testing::FakeTransport;
+    use crate::config::FileConfig;
+    use crate::core::{ConfigProvider, GitClient, Method, RepoId, Transport};
+    use crate::git::{ShellGit, StubRunner};
 
     use super::*;
     use crate::testsupport::{test_context, ScriptedPrompter};
@@ -402,10 +402,10 @@ mod tests {
 
     #[test]
     fn render_view_colors_state_when_enabled() {
-        let (mut io, _) = bb_core::IoStreams::test();
+        let (mut io, _) = crate::core::IoStreams::test();
         io.set_stdout_tty(true);
         let cs = io.color_scheme();
-        let issue: bb_api::Issue = serde_json::from_str(ISSUE_42).unwrap();
+        let issue: crate::api::Issue = serde_json::from_str(ISSUE_42).unwrap();
         let out = render_view(&issue, cs, true);
         // `new` must use the green code, not red.
         assert!(out.contains("new"));

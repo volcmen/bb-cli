@@ -1,7 +1,7 @@
 //! Transport-agnostic HTTP request/response types used by the [`Transport`]
 //! seam.
 //!
-//! [`Transport`]: crate::traits::Transport
+//! [`Transport`]: crate::core::traits::Transport
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;

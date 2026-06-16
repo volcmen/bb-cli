@@ -5,9 +5,9 @@
 //! commit. As with `gh`, if any check has failed the process exits non-zero
 //! (after printing the table), so it can gate CI.
 
-use bb_api::models::CommitStatus;
-use bb_api::BitbucketClient;
-use bb_core::{AuthError, ColorScheme, Context, SilentError};
+use crate::api::models::CommitStatus;
+use crate::api::BitbucketClient;
+use crate::core::{AuthError, ColorScheme, Context, SilentError};
 use clap::Args;
 
 use crate::auth;
@@ -175,10 +175,10 @@ fn color_state(cs: ColorScheme, state: &str) -> String {
 mod tests {
     use std::sync::Arc;
 
-    use bb_api::testing::FakeTransport;
-    use bb_config::FileConfig;
-    use bb_core::{ConfigProvider, GitClient, Method, RepoId, Transport};
-    use bb_git::{ShellGit, StubRunner};
+    use crate::api::testing::FakeTransport;
+    use crate::config::FileConfig;
+    use crate::core::{ConfigProvider, GitClient, Method, RepoId, Transport};
+    use crate::git::{ShellGit, StubRunner};
 
     use super::*;
     use crate::testsupport::{test_context, ScriptedPrompter};
@@ -197,7 +197,7 @@ mod tests {
         http: Arc<FakeTransport>,
         config: Arc<dyn ConfigProvider>,
         tty: bool,
-    ) -> (Context, bb_core::TestBuffers) {
+    ) -> (Context, crate::core::TestBuffers) {
         let git: Arc<dyn GitClient> = Arc::new(ShellGit::new(Arc::new(StubRunner::new())));
         let transport: Arc<dyn Transport> = http;
         let (mut ctx, bufs) = test_context(

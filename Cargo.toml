@@ -1,12 +1,6 @@
 [workspace]
 resolver = "2"
-members = [
-    "crates/bb",
-    "crates/bb-core",
-    "crates/bb-api",
-    "crates/bb-config",
-    "crates/bb-git",
-]
+members = ["crates/bb"]
 
 [workspace.package]
 version = "0.1.0"
@@ -17,12 +11,6 @@ repository = "https://github.com/volcmen/bb-cli"
 authors = ["volcmen"]
 
 [workspace.dependencies]
-# internal crates
-bb-core = { path = "crates/bb-core" }
-bb-api = { path = "crates/bb-api" }
-bb-config = { path = "crates/bb-config" }
-bb-git = { path = "crates/bb-git" }
-
 # external
 anyhow = "1"
 thiserror = "2"

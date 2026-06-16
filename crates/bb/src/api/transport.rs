@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use bb_core::{ApiError, HttpRequest, HttpResponse, Method, Transport};
+use crate::core::{ApiError, HttpRequest, HttpResponse, Method, Transport};
 
 /// A `reqwest`-backed transport.
 pub struct ReqwestTransport {

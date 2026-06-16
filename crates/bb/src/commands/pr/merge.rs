@@ -1,7 +1,7 @@
 //! `bb pr merge`.
 
-use bb_api::BitbucketClient;
-use bb_core::Context;
+use crate::api::BitbucketClient;
+use crate::core::Context;
 use clap::Args;
 
 #[derive(Args, Debug)]
@@ -37,20 +37,20 @@ struct MergeResult {
     #[serde(default)]
     state: Option<String>,
     #[serde(default)]
-    links: bb_api::Links,
+    links: crate::api::Links,
 }
 
 /// Run `bb pr merge`.
 ///
 /// # Errors
-/// Returns [`bb_core::AuthError`] when not authenticated, or propagates the
+/// Returns [`crate::core::AuthError`] when not authenticated, or propagates the
 /// API/git error (e.g. a merge conflict surfaced by Bitbucket).
 pub fn run(ctx: &Context, args: MergeArgs) -> anyhow::Result<()> {
     let repo = ctx.base_repo()?;
     let host = repo.host().to_owned();
     let header = crate::auth::header_for(ctx.config.as_ref(), &host);
     if header.is_none() {
-        return Err(bb_core::AuthError::new(host).into());
+        return Err(crate::core::AuthError::new(host).into());
     }
     let client = BitbucketClient::new(ctx.transport.clone(), header);
 
@@ -96,10 +96,10 @@ pub fn run(ctx: &Context, args: MergeArgs) -> anyhow::Result<()> {
 mod tests {
     use std::sync::Arc;
 
-    use bb_api::testing::FakeTransport;
-    use bb_config::FileConfig;
-    use bb_core::{ConfigProvider, GitClient, Method, RepoId, Transport};
-    use bb_git::{ShellGit, StubRunner};
+    use crate::api::testing::FakeTransport;
+    use crate::config::FileConfig;
+    use crate::core::{ConfigProvider, GitClient, Method, RepoId, Transport};
+    use crate::git::{ShellGit, StubRunner};
 
     use super::*;
     use crate::testsupport::{test_context, ScriptedPrompter};
@@ -119,7 +119,7 @@ mod tests {
     fn ctx_with(
         http: Arc<FakeTransport>,
         config: Arc<dyn ConfigProvider>,
-    ) -> (Context, bb_core::TestBuffers) {
+    ) -> (Context, crate::core::TestBuffers) {
         let git: Arc<dyn GitClient> = Arc::new(ShellGit::new(Arc::new(StubRunner::new())));
         let transport: Arc<dyn Transport> = http;
         let (mut ctx, bufs) = test_context(
@@ -234,7 +234,7 @@ mod tests {
         };
         let err = run(&ctx, args).unwrap_err();
         assert!(
-            err.downcast_ref::<bb_core::AuthError>().is_some(),
+            err.downcast_ref::<crate::core::AuthError>().is_some(),
             "expected AuthError, got: {err:#}"
         );
     }

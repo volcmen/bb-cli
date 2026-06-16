@@ -101,16 +101,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
-name = "bb"
+name = "bb-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
  "base64",
- "bb-api",
- "bb-config",
- "bb-core",
- "bb-git",
  "clap",
  "clap_complete",
  "clap_mangen",
@@ -120,46 +116,15 @@ dependencies = [
  "jaq-json",
  "jaq-std",
  "predicates",
+ "regex",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
- "tinytemplate",
-]
-
-[[package]]
-name = "bb-api"
-version = "0.1.0"
-dependencies = [
- "bb-core",
- "reqwest",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "bb-config"
-version = "0.1.0"
-dependencies = [
- "bb-core",
- "serde",
- "tempfile",
- "toml",
-]
-
-[[package]]
-name = "bb-core"
-version = "0.1.0"
-dependencies = [
  "thiserror",
-]
-
-[[package]]
-name = "bb-git"
-version = "0.1.0"
-dependencies = [
- "bb-core",
- "regex",
+ "tinytemplate",
+ "toml",
  "which",
 ]
 

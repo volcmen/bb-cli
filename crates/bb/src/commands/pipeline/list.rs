@@ -1,8 +1,8 @@
 //! `bb pipeline list` — list recent CI pipelines for the current repository.
 
-use bb_api::models::Pipeline;
-use bb_api::BitbucketClient;
-use bb_core::{AuthError, ColorScheme, Context};
+use crate::api::models::Pipeline;
+use crate::api::BitbucketClient;
+use crate::core::{AuthError, ColorScheme, Context};
 use clap::Args;
 
 use crate::auth;
@@ -24,7 +24,7 @@ pub struct ListArgs {
 ///
 /// # Errors
 /// Returns [`AuthError`] (exit 4) if not authenticated for the repo's host, and
-/// propagates [`ApiError`](bb_core::ApiError) from the listing call.
+/// propagates [`ApiError`](crate::core::ApiError) from the listing call.
 pub fn run(ctx: &Context, args: ListArgs) -> anyhow::Result<()> {
     let repo = ctx.base_repo()?;
     let host = repo.host().to_owned();
@@ -171,10 +171,10 @@ fn color_result(cs: ColorScheme, result: &str) -> String {
 mod tests {
     use std::sync::Arc;
 
-    use bb_api::testing::FakeTransport;
-    use bb_config::FileConfig;
-    use bb_core::{ConfigProvider, GitClient, Method, RepoId, Transport};
-    use bb_git::{ShellGit, StubRunner};
+    use crate::api::testing::FakeTransport;
+    use crate::config::FileConfig;
+    use crate::core::{ConfigProvider, GitClient, Method, RepoId, Transport};
+    use crate::git::{ShellGit, StubRunner};
 
     use super::*;
     use crate::testsupport::{test_context, ScriptedPrompter};
@@ -402,7 +402,7 @@ mod tests {
             ..list_args()
         };
         let err = run(&ctx, a).unwrap_err();
-        assert!(err.downcast_ref::<bb_core::FlagError>().is_some());
+        assert!(err.downcast_ref::<crate::core::FlagError>().is_some());
     }
 
     #[test]
@@ -432,7 +432,7 @@ mod tests {
 
     #[test]
     fn render_table_colors_result_when_enabled() {
-        let (mut io, _) = bb_core::IoStreams::test();
+        let (mut io, _) = crate::core::IoStreams::test();
         io.set_stdout_tty(true);
         let cs = io.color_scheme();
         let pipelines: Vec<Pipeline> = serde_json::from_str(TWO_PIPELINES)

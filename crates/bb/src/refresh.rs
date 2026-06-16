@@ -7,11 +7,11 @@
 //! the new token is persisted, and the original request is retried once. If the
 //! refresh isn't possible (not OAuth, no refresh token / consumer creds, or the
 //! grant itself fails) the original `401` is surfaced so the caller maps it to
-//! an [`AuthError`](bb_core::AuthError) telling the user to log in again.
+//! an [`AuthError`](crate::core::AuthError) telling the user to log in again.
 
 use std::sync::Arc;
 
-use bb_core::{ApiError, ConfigProvider, HttpRequest, HttpResponse, Method, Transport};
+use crate::core::{ApiError, ConfigProvider, HttpRequest, HttpResponse, Method, Transport};
 
 use crate::auth;
 use crate::render::percent_encode;
@@ -120,7 +120,7 @@ impl Transport for RefreshingTransport {
 mod tests {
     use std::sync::Mutex;
 
-    use bb_config::FileConfig;
+    use crate::config::FileConfig;
 
     use super::*;
 

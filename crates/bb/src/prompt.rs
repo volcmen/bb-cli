@@ -1,6 +1,6 @@
 //! The real [`Prompter`] implementation, backed by `inquire`.
 
-use bb_core::{PromptError, Prompter};
+use crate::core::{PromptError, Prompter};
 
 /// Interactive prompts via `inquire`.
 pub struct InquirePrompter;

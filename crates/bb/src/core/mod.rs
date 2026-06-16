@@ -11,6 +11,10 @@
 //! Factory pattern in GitHub's `gh` CLI: commands depend only on the traits, so
 //! every command is testable by swapping in fakes.
 
+// Absorbed from the former `bb-core` crate: the full seam-trait + type API is
+// retained even though the single binary doesn't exercise every method/field.
+#![allow(dead_code)]
+
 pub mod context;
 pub mod error;
 pub mod http;
@@ -24,6 +28,10 @@ pub use error::{
     PromptError, SilentError,
 };
 pub use http::{HttpRequest, HttpResponse, Method};
-pub use io::{ColorScheme, IoStreams, TestBuffers};
+pub use io::{ColorScheme, IoStreams};
+// TestBuffers is only referenced by tests; gate the re-export so it isn't
+// flagged as unused in a non-test build.
+#[cfg(test)]
+pub use io::TestBuffers;
 pub use repo::{RepoId, DEFAULT_HOST};
 pub use traits::{Browser, Commit, ConfigProvider, GitClient, Prompter, Remote, Transport};

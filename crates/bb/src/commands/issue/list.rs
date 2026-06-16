@@ -1,8 +1,8 @@
 //! `bb issue list` — list issues for the current repository's tracker.
 
-use bb_api::models::Issue;
-use bb_api::BitbucketClient;
-use bb_core::{AuthError, ColorScheme, Context, FlagError};
+use crate::api::models::Issue;
+use crate::api::BitbucketClient;
+use crate::core::{AuthError, ColorScheme, Context, FlagError};
 use clap::Args;
 
 use crate::auth;
@@ -30,7 +30,7 @@ pub struct ListArgs {
 /// # Errors
 /// Returns [`AuthError`] (exit 4) if not authenticated for the repo's host,
 /// [`FlagError`] (exit 1) if the repo's issue tracker is disabled (the API
-/// returns 404 on `/issues`), and propagates [`ApiError`](bb_core::ApiError)
+/// returns 404 on `/issues`), and propagates [`ApiError`](crate::core::ApiError)
 /// from the listing call.
 pub fn run(ctx: &Context, args: ListArgs) -> anyhow::Result<()> {
     let repo = ctx.base_repo()?;
@@ -178,10 +178,10 @@ fn color_state(cs: ColorScheme, state: &str) -> String {
 mod tests {
     use std::sync::Arc;
 
-    use bb_api::testing::FakeTransport;
-    use bb_config::FileConfig;
-    use bb_core::{ConfigProvider, GitClient, Method, RepoId, Transport};
-    use bb_git::{ShellGit, StubRunner};
+    use crate::api::testing::FakeTransport;
+    use crate::config::FileConfig;
+    use crate::core::{ConfigProvider, GitClient, Method, RepoId, Transport};
+    use crate::git::{ShellGit, StubRunner};
 
     use super::*;
     use crate::testsupport::{test_context, ScriptedPrompter};

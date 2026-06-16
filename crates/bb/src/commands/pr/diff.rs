@@ -1,7 +1,7 @@
 //! `bb pr diff` — print a pull request's diff (raw, pipe-friendly: no color).
 
-use bb_api::BitbucketClient;
-use bb_core::{AuthError, Context};
+use crate::api::BitbucketClient;
+use crate::core::{AuthError, Context};
 use clap::Args;
 
 use super::finder;
@@ -18,8 +18,8 @@ pub struct DiffArgs {
 ///
 /// # Errors
 /// Returns [`AuthError`] (exit 4) if not authenticated for the repo's host,
-/// [`FlagError`](bb_core::FlagError) for a malformed id, and propagates
-/// [`ApiError`](bb_core::ApiError) from the lookup or diff fetch.
+/// [`FlagError`](crate::core::FlagError) for a malformed id, and propagates
+/// [`ApiError`](crate::core::ApiError) from the lookup or diff fetch.
 pub fn run(ctx: &Context, args: DiffArgs) -> anyhow::Result<()> {
     let repo = ctx.base_repo()?;
     let host = repo.host().to_owned();
@@ -49,10 +49,10 @@ pub fn run(ctx: &Context, args: DiffArgs) -> anyhow::Result<()> {
 mod tests {
     use std::sync::Arc;
 
-    use bb_api::testing::FakeTransport;
-    use bb_config::FileConfig;
-    use bb_core::{ConfigProvider, GitClient, Method, Transport};
-    use bb_git::{ShellGit, StubRunner};
+    use crate::api::testing::FakeTransport;
+    use crate::config::FileConfig;
+    use crate::core::{ConfigProvider, GitClient, Method, Transport};
+    use crate::git::{ShellGit, StubRunner};
 
     use super::*;
     use crate::testsupport::{test_context, ScriptedPrompter};
@@ -183,6 +183,6 @@ mod tests {
         let (ctx, _bufs) = test_context(transport, git(), config(), prompter, false);
 
         let err = run(&ctx, args(Some("nope"))).unwrap_err();
-        assert!(err.downcast_ref::<bb_core::FlagError>().is_some());
+        assert!(err.downcast_ref::<crate::core::FlagError>().is_some());
     }
 }

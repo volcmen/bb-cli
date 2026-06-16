@@ -1,6 +1,6 @@
 //! `bb pr checkout` — check out a pull request's source branch locally.
 
-use bb_core::{AuthError, Context};
+use crate::core::{AuthError, Context};
 use clap::Args;
 
 use crate::auth;
@@ -18,7 +18,7 @@ pub struct CheckoutArgs {
 /// it out locally.
 ///
 /// # Errors
-/// Returns [`FlagError`](bb_core::FlagError) for a malformed id, [`AuthError`]
+/// Returns [`FlagError`](crate::core::FlagError) for a malformed id, [`AuthError`]
 /// (exit 4) if not authenticated for the repo's host, an error if the PR is not
 /// found, has no source branch, or its source lives in a fork, and propagates
 /// any git failure.
@@ -36,7 +36,7 @@ pub fn run(ctx: &Context, args: CheckoutArgs) -> anyhow::Result<()> {
     if header.is_none() {
         return Err(AuthError::new(host).into());
     }
-    let client = bb_api::BitbucketClient::new(ctx.transport.clone(), header);
+    let client = crate::api::BitbucketClient::new(ctx.transport.clone(), header);
 
     let id = super::finder::parse_id(&args.id)?;
     let pr = super::finder::find_by_id(&client, &repo, id)?;
@@ -71,10 +71,10 @@ pub fn run(ctx: &Context, args: CheckoutArgs) -> anyhow::Result<()> {
 mod tests {
     use std::sync::Arc;
 
-    use bb_api::testing::FakeTransport;
-    use bb_config::FileConfig;
-    use bb_core::{ConfigProvider, FlagError, GitClient, Method, Transport};
-    use bb_git::{ShellGit, StubRunner};
+    use crate::api::testing::FakeTransport;
+    use crate::config::FileConfig;
+    use crate::core::{ConfigProvider, FlagError, GitClient, Method, Transport};
+    use crate::git::{ShellGit, StubRunner};
 
     use super::*;
     use crate::testsupport::{test_context, ScriptedPrompter};

@@ -1,8 +1,8 @@
 //! `bb repo list` — list repositories in a workspace.
 
-use bb_api::models::Repository;
-use bb_api::BitbucketClient;
-use bb_core::{AuthError, ColorScheme, Context, FlagError};
+use crate::api::models::Repository;
+use crate::api::BitbucketClient;
+use crate::core::{AuthError, ColorScheme, Context, FlagError};
 use clap::Args;
 
 use crate::auth;
@@ -36,7 +36,7 @@ pub struct ListArgs {
 /// # Errors
 /// Returns [`AuthError`] (exit 4) if not authenticated for the target host,
 /// [`FlagError`] (exit 1) if no workspace is given and none can be inferred, and
-/// propagates [`ApiError`](bb_core::ApiError) from the listing call.
+/// propagates [`ApiError`](crate::core::ApiError) from the listing call.
 pub fn run(ctx: &Context, args: ListArgs) -> anyhow::Result<()> {
     let workspace = match args.workspace {
         Some(w) => w,
@@ -147,10 +147,10 @@ fn render_table(repos: &[Repository], cs: ColorScheme) -> String {
 mod tests {
     use std::sync::Arc;
 
-    use bb_api::testing::FakeTransport;
-    use bb_config::FileConfig;
-    use bb_core::{ConfigProvider, GitClient, Method, Transport};
-    use bb_git::{ShellGit, StubRunner};
+    use crate::api::testing::FakeTransport;
+    use crate::config::FileConfig;
+    use crate::core::{ConfigProvider, GitClient, Method, Transport};
+    use crate::git::{ShellGit, StubRunner};
 
     use super::*;
     use crate::testsupport::{test_context, ScriptedPrompter};

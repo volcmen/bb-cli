@@ -1,6 +1,6 @@
 //! Bitbucket remote-URL parsing → [`RepoId`].
 
-use bb_core::RepoId;
+use crate::core::RepoId;
 
 /// Parse a git remote URL into a Bitbucket [`RepoId`].
 ///

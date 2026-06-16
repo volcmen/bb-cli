@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use bb_core::{ApiError, ApiErrorItem, HttpRequest, HttpResponse, Method, Transport};
+use crate::core::{ApiError, ApiErrorItem, HttpRequest, HttpResponse, Method, Transport};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 
@@ -231,8 +231,8 @@ fn parse_error_body(body: &[u8]) -> Option<(String, Vec<ApiErrorItem>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{PullRequest, User};
-    use crate::testing::FakeTransport;
+    use crate::api::models::{PullRequest, User};
+    use crate::api::testing::FakeTransport;
 
     #[test]
     fn get_parses_typed_response() {

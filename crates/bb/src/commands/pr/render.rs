@@ -1,8 +1,8 @@
 //! Rendering of pull-request lists: a TTY-aware table (aligned columns, colored
 //! id/state) and a script-friendly tab-separated form (no color, no header).
 
-use bb_api::models::PullRequest;
-use bb_core::ColorScheme;
+use crate::api::models::PullRequest;
+use crate::core::ColorScheme;
 
 use crate::render::{pad, sanitize};
 
@@ -98,7 +98,7 @@ fn color_state(cs: ColorScheme, state: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use bb_core::IoStreams;
+    use crate::core::IoStreams;
 
     use super::*;
 

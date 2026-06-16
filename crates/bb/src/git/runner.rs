@@ -1,6 +1,6 @@
 //! The [`CommandRunner`] seam: a real `git` runner and a regex-driven stub.
 
-use bb_core::GitError;
+use crate::core::GitError;
 
 /// The result of running a command.
 #[derive(Debug, Clone)]
@@ -10,7 +10,7 @@ pub struct CommandOutput {
     pub stderr: String,
 }
 
-/// Runs `git` subcommands. Injected into [`ShellGit`](crate::ShellGit) so tests
+/// Runs `git` subcommands. Injected into [`ShellGit`](crate::git::ShellGit) so tests
 /// can stub output.
 pub trait CommandRunner: Send + Sync {
     fn run(&self, args: &[&str]) -> Result<CommandOutput, GitError>;
@@ -34,14 +34,14 @@ impl CommandRunner for RealRunner {
     }
 }
 
-#[cfg(any(test, feature = "test-util"))]
+#[cfg(test)]
 pub use stub::StubRunner;
 
-#[cfg(any(test, feature = "test-util"))]
+#[cfg(test)]
 mod stub {
     use std::sync::Mutex;
 
-    use bb_core::GitError;
+    use crate::core::GitError;
 
     use super::{CommandOutput, CommandRunner};
 

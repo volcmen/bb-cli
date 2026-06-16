@@ -1,7 +1,7 @@
 //! `bb issue comment`.
 
-use bb_api::BitbucketClient;
-use bb_core::{AuthError, Context, FlagError};
+use crate::api::BitbucketClient;
+use crate::core::{AuthError, Context, FlagError};
 use clap::Args;
 
 #[derive(Args, Debug)]
@@ -36,7 +36,7 @@ struct CommentBody<'a> {
 /// # Errors
 /// Returns [`AuthError`] (exit 4) when not authenticated, [`FlagError`] for an
 /// invalid issue id or a missing body when non-interactive, and propagates
-/// [`ApiError`](bb_core::ApiError) / IO errors.
+/// [`ApiError`](crate::core::ApiError) / IO errors.
 pub fn run(ctx: &Context, args: CommentArgs) -> anyhow::Result<()> {
     let repo = ctx.base_repo()?;
     let host = repo.host().to_owned();
@@ -89,9 +89,9 @@ fn resolve_body(ctx: &Context, args: &CommentArgs) -> anyhow::Result<String> {
     Err(FlagError::new("--body required when not running interactively").into())
 }
 
-fn to_anyhow(err: bb_core::PromptError) -> anyhow::Error {
+fn to_anyhow(err: crate::core::PromptError) -> anyhow::Error {
     match err {
-        bb_core::PromptError::Cancelled => bb_core::CancelError.into(),
+        crate::core::PromptError::Cancelled => crate::core::CancelError.into(),
         other => anyhow::anyhow!(other),
     }
 }
@@ -100,10 +100,10 @@ fn to_anyhow(err: bb_core::PromptError) -> anyhow::Error {
 mod tests {
     use std::sync::Arc;
 
-    use bb_api::testing::FakeTransport;
-    use bb_config::FileConfig;
-    use bb_core::{ConfigProvider, GitClient, IoStreams, Method, Prompter, RepoId, Transport};
-    use bb_git::{ShellGit, StubRunner};
+    use crate::api::testing::FakeTransport;
+    use crate::config::FileConfig;
+    use crate::core::{ConfigProvider, GitClient, IoStreams, Method, Prompter, RepoId, Transport};
+    use crate::git::{ShellGit, StubRunner};
 
     use super::*;
     use crate::testsupport::{test_context, RecordingBrowser, ScriptedPrompter};
@@ -123,7 +123,7 @@ mod tests {
         http: Arc<FakeTransport>,
         config: Arc<dyn ConfigProvider>,
         prompter: Arc<dyn Prompter>,
-    ) -> (Context, bb_core::TestBuffers) {
+    ) -> (Context, crate::core::TestBuffers) {
         let git: Arc<dyn GitClient> = Arc::new(ShellGit::new(Arc::new(StubRunner::new())));
         let transport: Arc<dyn Transport> = http;
         let (mut ctx, bufs) = test_context(transport, git, config, prompter, false);
@@ -137,7 +137,7 @@ mod tests {
         http: Arc<FakeTransport>,
         config: Arc<dyn ConfigProvider>,
         prompter: Arc<dyn Prompter>,
-    ) -> (Context, bb_core::TestBuffers) {
+    ) -> (Context, crate::core::TestBuffers) {
         let (mut io, bufs) = IoStreams::test();
         io.set_stdout_tty(true);
         io.set_stderr_tty(true);

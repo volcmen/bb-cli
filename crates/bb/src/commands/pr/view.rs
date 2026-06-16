@@ -1,7 +1,7 @@
 //! `bb pr view` — show a pull request's details, or open it in the browser.
 
-use bb_api::BitbucketClient;
-use bb_core::{AuthError, ColorScheme, Context};
+use crate::api::BitbucketClient;
+use crate::core::{AuthError, ColorScheme, Context};
 use clap::Args;
 
 use super::finder;
@@ -39,8 +39,8 @@ pub struct ViewArgs {
 ///
 /// # Errors
 /// Returns [`AuthError`] (exit 4) if not authenticated for the repo's host,
-/// [`FlagError`](bb_core::FlagError) for a malformed id, and propagates
-/// [`ApiError`](bb_core::ApiError) from the lookup.
+/// [`FlagError`](crate::core::FlagError) for a malformed id, and propagates
+/// [`ApiError`](crate::core::ApiError) from the lookup.
 pub fn run(ctx: &Context, args: ViewArgs) -> anyhow::Result<()> {
     let repo = ctx.base_repo()?;
     let host = repo.host().to_owned();
@@ -78,7 +78,7 @@ pub fn run(ctx: &Context, args: ViewArgs) -> anyhow::Result<()> {
 }
 
 /// Render a single PR's details. `color` gates state coloring (TTY only).
-fn render_view(pr: &bb_api::PullRequest, cs: ColorScheme, color: bool) -> String {
+fn render_view(pr: &crate::api::PullRequest, cs: ColorScheme, color: bool) -> String {
     let title = pr.title.as_deref().unwrap_or("");
     let mut out = format!("#{} {}\n", pr.id, title);
 
@@ -124,10 +124,10 @@ fn color_state(cs: ColorScheme, state: &str) -> String {
 mod tests {
     use std::sync::Arc;
 
-    use bb_api::testing::FakeTransport;
-    use bb_config::FileConfig;
-    use bb_core::{ConfigProvider, GitClient, Method, Transport};
-    use bb_git::{ShellGit, StubRunner};
+    use crate::api::testing::FakeTransport;
+    use crate::config::FileConfig;
+    use crate::core::{ConfigProvider, GitClient, Method, Transport};
+    use crate::git::{ShellGit, StubRunner};
 
     use super::*;
     use crate::testsupport::{test_context, ScriptedPrompter};
@@ -387,7 +387,7 @@ mod tests {
             },
         };
         let err = run(&ctx, a).unwrap_err();
-        assert!(err.downcast_ref::<bb_core::FlagError>().is_some());
+        assert!(err.downcast_ref::<crate::core::FlagError>().is_some());
     }
 
     #[test]
@@ -410,15 +410,15 @@ mod tests {
         let (ctx, _bufs) = test_context(transport, git(), config(), prompter, false);
 
         let err = run(&ctx, args(Some("not-a-number"), false)).unwrap_err();
-        assert!(err.downcast_ref::<bb_core::FlagError>().is_some());
+        assert!(err.downcast_ref::<crate::core::FlagError>().is_some());
     }
 
     #[test]
     fn render_view_colors_state_when_enabled() {
-        let (mut io, _) = bb_core::IoStreams::test();
+        let (mut io, _) = crate::core::IoStreams::test();
         io.set_stdout_tty(true);
         let cs = io.color_scheme();
-        let pr: bb_api::PullRequest = serde_json::from_str(PR_42).unwrap();
+        let pr: crate::api::PullRequest = serde_json::from_str(PR_42).unwrap();
         let out = render_view(&pr, cs, true);
         // OPEN must use the green code, not red.
         assert!(out.contains("OPEN"));
