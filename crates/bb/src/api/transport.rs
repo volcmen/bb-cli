@@ -14,10 +14,9 @@ pub struct ReqwestTransport {
 impl ReqwestTransport {
     /// Build a transport with the bb-cli user agent.
     ///
-    /// # Panics
-    /// Panics only if the TLS backend fails to initialize, which is fatal.
-    #[must_use]
-    pub fn new(user_agent: &str) -> Self {
+    /// # Errors
+    /// Returns [`ApiError::Network`] if the HTTP/TLS backend fails to initialize.
+    pub fn new(user_agent: &str) -> Result<Self, ApiError> {
         // Bound every request so `bb` can never hang forever on a dead or slow
         // server: a total deadline plus a tighter connect deadline.
         let client = reqwest::blocking::Client::builder()
@@ -25,8 +24,8 @@ impl ReqwestTransport {
             .timeout(std::time::Duration::from_secs(30))
             .connect_timeout(std::time::Duration::from_secs(10))
             .build()
-            .expect("failed to build HTTP client");
-        Self { client }
+            .map_err(|e| ApiError::Network(e.to_string()))?;
+        Ok(Self { client })
     }
 }
 
