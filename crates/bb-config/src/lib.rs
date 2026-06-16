@@ -63,7 +63,12 @@ impl FileConfig {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().expect("config state poisoned")
+        // Recover the guard on poison rather than panicking: bb is single-threaded
+        // per command, so a poisoned lock only means a prior panic, and the state
+        // is still consistent enough to flush.
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -119,6 +124,8 @@ impl ConfigProvider for FileConfig {
         }
         let s = self.lock();
         std::fs::create_dir_all(&self.dir).map_err(|e| ConfigError::Io(e.to_string()))?;
+        // The config dir can hold credentials (hosts.toml); keep it owner-only.
+        set_dir_owner_only(&self.dir)?;
 
         let global_toml =
             toml::to_string(&s.global).map_err(|e| ConfigError::Parse(e.to_string()))?;
@@ -128,8 +135,10 @@ impl ConfigProvider for FileConfig {
         let hosts_toml =
             toml::to_string(&s.hosts).map_err(|e| ConfigError::Parse(e.to_string()))?;
         let hosts_path = self.dir.join("hosts.toml");
-        std::fs::write(&hosts_path, hosts_toml).map_err(|e| ConfigError::Io(e.to_string()))?;
-        set_owner_only(&hosts_path)?;
+        // Write credentials 0600 *atomically*: create the file owner-only so it is
+        // never briefly world-readable under the process umask (the old
+        // write-then-chmod left a TOCTOU window).
+        write_owner_only(&hosts_path, hosts_toml.as_bytes())?;
         Ok(())
     }
 }
@@ -248,14 +257,40 @@ fn read_hosts(path: &Path) -> Result<BTreeMap<String, Map>, ConfigError> {
 }
 
 #[cfg(unix)]
-fn set_owner_only(path: &Path) -> Result<(), ConfigError> {
-    use std::os::unix::fs::PermissionsExt;
+fn write_owner_only(path: &Path, contents: &[u8]) -> Result<(), ConfigError> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    // Create with 0600 from the start (no umask window), then also enforce the
+    // mode in case the file already existed with looser permissions.
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|e| ConfigError::Io(e.to_string()))?;
+    f.write_all(contents)
+        .map_err(|e| ConfigError::Io(e.to_string()))?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
         .map_err(|e| ConfigError::Io(e.to_string()))
 }
 
 #[cfg(not(unix))]
-fn set_owner_only(_path: &Path) -> Result<(), ConfigError> {
+fn write_owner_only(path: &Path, contents: &[u8]) -> Result<(), ConfigError> {
+    std::fs::write(path, contents).map_err(|e| ConfigError::Io(e.to_string()))
+}
+
+/// Restrict the config directory to the owner (`0700`) so credential files
+/// underneath it aren't enumerable by other users.
+#[cfg(unix)]
+fn set_dir_owner_only(path: &Path) -> Result<(), ConfigError> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| ConfigError::Io(e.to_string()))
+}
+
+#[cfg(not(unix))]
+fn set_dir_owner_only(_path: &Path) -> Result<(), ConfigError> {
     Ok(())
 }
 
