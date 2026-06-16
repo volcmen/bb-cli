@@ -6,6 +6,7 @@ use crate::core::{AuthError, Context, FlagError, RepoId};
 use clap::Args;
 
 use crate::auth;
+use crate::render::percent_encode;
 
 #[derive(Args, Debug)]
 pub struct CreateArgs {
@@ -96,8 +97,8 @@ pub fn run(ctx: &Context, args: CreateArgs) -> anyhow::Result<()> {
             "https://bitbucket.org/{}/{}/pull-requests/new?source={}&dest={}",
             repo.workspace(),
             repo.slug(),
-            url_encode(&head),
-            url_encode(&base),
+            percent_encode(&head),
+            percent_encode(&base),
         );
         let _ = ctx.browser.browse(&url);
         ctx.io.println(&url);
@@ -251,21 +252,6 @@ fn member_matches(user: &crate::api::User, want: &str) -> bool {
     .into_iter()
     .flatten()
     .any(|field| field.eq_ignore_ascii_case(want))
-}
-
-/// Minimal percent-encoding for URL query/path values (used for the `--web`
-/// compare URL). Matches the unreserved set; everything else is `%XX`.
-fn url_encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }
 
 fn to_anyhow(err: crate::core::PromptError) -> anyhow::Error {

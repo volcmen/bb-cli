@@ -10,6 +10,7 @@ use crate::core::{Context, FlagError};
 use clap::Args;
 
 use crate::auth;
+use crate::render::percent_encode;
 
 #[derive(Args)]
 pub struct LoginArgs {
@@ -234,11 +235,11 @@ fn oauth_login(ctx: &Context, host: &str, args: &LoginArgs) -> anyhow::Result<()
         "https://bitbucket.org/site/oauth2/authorize\
          ?client_id={}&response_type=code&redirect_uri={}&state={}\
          &code_challenge={}&code_challenge_method=S256&scope={}",
-        url_encode(&client_id),
-        url_encode(&redirect_uri),
-        url_encode(&state),
-        url_encode(&pkce.challenge),
-        url_encode(OAUTH_SCOPES),
+        percent_encode(&client_id),
+        percent_encode(&redirect_uri),
+        percent_encode(&state),
+        percent_encode(&pkce.challenge),
+        percent_encode(OAUTH_SCOPES),
     );
 
     ctx.io
@@ -269,67 +270,83 @@ fn oauth_login(ctx: &Context, host: &str, args: &LoginArgs) -> anyhow::Result<()
 /// before giving up, so `--web` cannot hang forever when the user never approves.
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(180);
 
-/// Accept one connection on `listener` (giving up after `timeout`), parse the
-/// `code` and `state` query parameters from the HTTP GET request line, verify
-/// `state` matches the value we sent (CSRF protection), write a friendly
-/// response, and return the code.
+/// Wait (up to `timeout`) for the browser to hit the loopback callback, parse
+/// the `code`/`state` from the HTTP request line, verify `state` (CSRF), and
+/// return the code. Tolerates segmented reads and skips stray/empty connections
+/// (probes, preconnects) so a valid approval isn't lost. Validates *before*
+/// writing the browser response so the page reflects the real outcome.
 fn wait_for_code(
     listener: &TcpListener,
     expected_state: &str,
     timeout: Duration,
 ) -> anyhow::Result<String> {
-    let mut stream = accept_until(listener, timeout)?;
-    // Don't block forever on a stalled/partial request, either.
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
-    let mut buf = [0u8; 4096];
-    let n = stream.read(&mut buf)?;
-    let request = String::from_utf8_lossy(&buf[..n]);
-
-    // First line: "GET /callback?code=XXXX&state=YYYY HTTP/1.1"
-    let first_line = request.lines().next().unwrap_or_default();
-    let target = first_line.split_whitespace().nth(1).unwrap_or_default();
-
-    let body = "You may close this tab and return to the terminal.";
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        body.len(),
-        body
-    );
-    let _ = stream.write_all(response.as_bytes());
-    let _ = stream.flush();
-
-    // Verify the CSRF state before trusting the code.
-    let returned_state = query_param(target, "state").unwrap_or_default();
-    if returned_state != expected_state {
-        return Err(FlagError::new("OAuth state mismatch; aborting login").into());
-    }
-
-    let code = query_param(target, "code").ok_or_else(|| {
-        FlagError::new("no authorization code was returned by Bitbucket; login aborted")
-    })?;
-
-    Ok(code)
-}
-
-/// Accept a single connection, giving up with a [`FlagError`] after `timeout`.
-/// Uses non-blocking polling so a browser that never calls back can't hang `bb`.
-fn accept_until(listener: &TcpListener, timeout: Duration) -> anyhow::Result<TcpStream> {
     listener.set_nonblocking(true)?;
     let deadline = Instant::now() + timeout;
     loop {
+        let Some(mut stream) = accept_before(listener, deadline)? else {
+            return Err(FlagError::new(
+                "timed out waiting for the OAuth callback; aborting login. \
+                 Re-run `bb auth login --web` and approve access in the browser.",
+            )
+            .into());
+        };
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+
+        let Some(target) = read_request_target(&mut stream) else {
+            // Empty/garbage connection (a probe or preconnect): keep waiting for
+            // the real browser callback until the deadline.
+            continue;
+        };
+        let returned_state = query_param(&target, "state");
+        let code = query_param(&target, "code");
+        if returned_state.is_none() && code.is_none() {
+            // Not our callback (e.g. a `/favicon.ico` fetch); ignore and wait.
+            respond(&mut stream, 400, "Not the OAuth callback.");
+            continue;
+        }
+
+        // Verify the CSRF state BEFORE telling the browser anything succeeded.
+        if returned_state.as_deref() != Some(expected_state) {
+            respond(
+                &mut stream,
+                400,
+                "Authorization failed (state mismatch). Return to the terminal.",
+            );
+            return Err(FlagError::new("OAuth state mismatch; aborting login").into());
+        }
+        let Some(code) = code else {
+            respond(
+                &mut stream,
+                400,
+                "Authorization failed (no code). Return to the terminal.",
+            );
+            return Err(FlagError::new(
+                "no authorization code was returned by Bitbucket; login aborted",
+            )
+            .into());
+        };
+
+        respond(
+            &mut stream,
+            200,
+            "You may close this tab and return to the terminal.",
+        );
+        return Ok(code);
+    }
+}
+
+/// Accept a connection, polling non-blockingly until `deadline`. Returns
+/// `Ok(None)` on timeout (so a browser that never calls back can't hang `bb`).
+fn accept_before(listener: &TcpListener, deadline: Instant) -> anyhow::Result<Option<TcpStream>> {
+    loop {
         match listener.accept() {
             Ok((stream, _peer)) => {
-                // Restore blocking semantics for the (timeout-bounded) read.
-                stream.set_nonblocking(false)?;
-                return Ok(stream);
+                stream.set_nonblocking(false)?; // blocking, timeout-bounded read
+                return Ok(Some(stream));
             }
             Err(e) if e.kind() == ErrorKind::WouldBlock => {
                 if Instant::now() >= deadline {
-                    return Err(FlagError::new(
-                        "timed out waiting for the OAuth callback; aborting login. \
-                         Re-run `bb auth login --web` and approve access in the browser.",
-                    )
-                    .into());
+                    return Ok(None);
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
@@ -338,7 +355,46 @@ fn accept_until(listener: &TcpListener, timeout: Duration) -> anyhow::Result<Tcp
     }
 }
 
-/// Extract a query parameter `key` from a request target like
+/// Read the HTTP request line from `stream`, tolerating reads split across TCP
+/// segments. Returns the request target (path+query), or `None` if the peer sent
+/// nothing / no parseable request line.
+fn read_request_target(stream: &mut TcpStream) -> Option<String> {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 1024];
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => break, // peer closed
+            Ok(n) => {
+                buf.extend_from_slice(&chunk[..n]);
+                // Stop once we have the end of the request line, or enough bytes.
+                if buf.windows(2).any(|w| w == b"\r\n") || buf.len() > 8192 {
+                    break;
+                }
+            }
+            Err(_) => break, // read timeout / error: use whatever arrived
+        }
+    }
+    if buf.is_empty() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&buf);
+    let first_line = text.lines().next()?;
+    // "GET /callback?code=XXXX&state=YYYY HTTP/1.1"
+    first_line.split_whitespace().nth(1).map(str::to_owned)
+}
+
+/// Write a minimal plain-text HTTP response and close.
+fn respond(stream: &mut TcpStream, status: u16, body: &str) {
+    let reason = if status == 200 { "OK" } else { "Bad Request" };
+    let response = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len(),
+    );
+    let _ = stream.write_all(response.as_bytes());
+    let _ = stream.flush();
+}
+
+/// Extract and percent-decode a query parameter `key` from a request target like
 /// `/callback?code=ABC&state=XYZ`.
 fn query_param(target: &str, key: &str) -> Option<String> {
     let query = target.split_once('?').map(|(_, q)| q)?;
@@ -346,11 +402,39 @@ fn query_param(target: &str, key: &str) -> Option<String> {
     for pair in query.split('&') {
         if let Some(value) = pair.strip_prefix(&prefix) {
             if !value.is_empty() {
-                return Some(value.to_owned());
+                return Some(percent_decode(value));
             }
         }
     }
     None
+}
+
+/// Percent-decode a URL query value (`%XX` → byte). Leaves other bytes as-is.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h), Some(l)) = (hex_nibble(bytes[i + 1]), hex_nibble(bytes[i + 2])) {
+                out.push((h << 4) | l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// A random hex-encoded opaque value for the OAuth `state` parameter.
@@ -457,26 +541,12 @@ impl TokenForm<'_> {
     fn encode(&self) -> String {
         format!(
             "grant_type={}&code={}&redirect_uri={}&code_verifier={}",
-            url_encode(self.grant_type),
-            url_encode(self.code),
-            url_encode(self.redirect_uri),
-            url_encode(self.code_verifier),
+            percent_encode(self.grant_type),
+            percent_encode(self.code),
+            percent_encode(self.redirect_uri),
+            percent_encode(self.code_verifier),
         )
     }
-}
-
-/// Minimal percent-encoding for `application/x-www-form-urlencoded` values.
-fn url_encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }
 
 fn to_anyhow(err: crate::core::PromptError) -> anyhow::Error {
@@ -787,7 +857,7 @@ mod tests {
     }
 
     #[test]
-    fn query_param_extracts_code_and_state() {
+    fn query_param_extracts_and_percent_decodes() {
         assert_eq!(
             query_param("/callback?code=abc123&state=xyz", "code"),
             Some("abc123".to_owned())
@@ -796,7 +866,51 @@ mod tests {
             query_param("/callback?code=abc123&state=xyz", "state"),
             Some("xyz".to_owned())
         );
+        // Percent-decoded so a code is not double-encoded at the token exchange.
+        assert_eq!(
+            query_param("/callback?code=a%2Fb%2Bc&state=x", "code"),
+            Some("a/b+c".to_owned())
+        );
         assert_eq!(query_param("/callback", "code"), None);
         assert_eq!(query_param("/callback?state=x", "code"), None);
+    }
+
+    #[test]
+    fn wait_for_code_skips_a_stray_connection_then_succeeds() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = std::thread::spawn(move || {
+            // A stray probe that connects and closes without sending anything.
+            drop(TcpStream::connect(addr).unwrap());
+            // The real browser callback.
+            let mut s = TcpStream::connect(addr).unwrap();
+            s.write_all(b"GET /callback?code=the-code&state=st HTTP/1.1\r\n\r\n")
+                .unwrap();
+            let mut buf = [0u8; 256];
+            let _ = s.read(&mut buf);
+        });
+
+        let code = wait_for_code(&listener, "st", Duration::from_secs(5)).unwrap();
+        assert_eq!(code, "the-code");
+        client.join().unwrap();
+    }
+
+    #[test]
+    fn wait_for_code_handles_a_segmented_request() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = std::thread::spawn(move || {
+            let mut s = TcpStream::connect(addr).unwrap();
+            // Send the request line in two writes (simulating TCP segmentation).
+            s.write_all(b"GET /callback?code=split").unwrap();
+            std::thread::sleep(Duration::from_millis(50));
+            s.write_all(b"-code&state=st HTTP/1.1\r\n\r\n").unwrap();
+            let mut buf = [0u8; 256];
+            let _ = s.read(&mut buf);
+        });
+
+        let code = wait_for_code(&listener, "st", Duration::from_secs(5)).unwrap();
+        assert_eq!(code, "split-code");
+        client.join().unwrap();
     }
 }
