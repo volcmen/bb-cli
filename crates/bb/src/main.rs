@@ -7,6 +7,7 @@ mod commands;
 mod factory;
 mod output;
 mod prompt;
+mod refresh;
 mod render;
 #[cfg(test)]
 mod testsupport;
