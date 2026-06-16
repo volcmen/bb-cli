@@ -27,6 +27,12 @@ pub struct LoginArgs {
     /// Credential type for Basic auth
     #[arg(long, value_parser = ["api_token", "app_password"])]
     pub auth_type: Option<String>,
+    /// OAuth consumer key for `--web` (else $BB_OAUTH_CLIENT_ID, else stored)
+    #[arg(long)]
+    pub client_id: Option<String>,
+    /// OAuth consumer secret for `--web` (else $BB_OAUTH_CLIENT_SECRET, else stored)
+    #[arg(long)]
+    pub client_secret: Option<String>,
 }
 
 /// Run `bb auth login`.
@@ -42,7 +48,7 @@ pub fn run(ctx: &Context, args: LoginArgs) -> anyhow::Result<()> {
         .unwrap_or_else(|| ctx.config.default_host());
 
     if args.web {
-        oauth_login(ctx, &host)
+        oauth_login(ctx, &host, &args)
     } else {
         basic_login(ctx, &host, &args)
     }
@@ -143,7 +149,7 @@ fn basic_login(ctx: &Context, host: &str, args: &LoginArgs) -> anyhow::Result<()
 
 // ----- OAuth 2.0 (--web) --------------------------------------------------
 
-fn oauth_login(ctx: &Context, host: &str) -> anyhow::Result<()> {
+fn oauth_login(ctx: &Context, host: &str, args: &LoginArgs) -> anyhow::Result<()> {
     // OAuth endpoints are Bitbucket Cloud-only.
     if host != bb_core::DEFAULT_HOST {
         return Err(FlagError::new(format!(
@@ -154,13 +160,6 @@ fn oauth_login(ctx: &Context, host: &str) -> anyhow::Result<()> {
         .into());
     }
 
-    let client_id = std::env::var("BB_OAUTH_CLIENT_ID")
-        .ok()
-        .filter(|s| !s.is_empty());
-    let client_secret = std::env::var("BB_OAUTH_CLIENT_SECRET")
-        .ok()
-        .filter(|s| !s.is_empty());
-
     // Fixed local callback port so the redirect_uri matches the consumer's
     // registered callback URL (Bitbucket validates the redirect). Override with
     // BB_OAUTH_PORT if 8765 is taken (and match it in the consumer config).
@@ -170,13 +169,29 @@ fn oauth_login(ctx: &Context, host: &str) -> anyhow::Result<()> {
         .unwrap_or(8765);
     let redirect_uri = format!("http://localhost:{port}/callback");
 
+    // Consumer credentials: --client-id/--secret flags, then env, then stored config.
+    let env_nonempty = |k: &str| std::env::var(k).ok().filter(|s| !s.is_empty());
+    let client_id = args
+        .client_id
+        .clone()
+        .or_else(|| env_nonempty("BB_OAUTH_CLIENT_ID"))
+        .or_else(|| ctx.config.get(host, "oauth_client_id"));
+    let client_secret = args
+        .client_secret
+        .clone()
+        .or_else(|| env_nonempty("BB_OAUTH_CLIENT_SECRET"))
+        .or_else(|| ctx.config.get(host, "oauth_client_secret"));
+
     let (Some(client_id), Some(client_secret)) = (client_id, client_secret) else {
         return Err(FlagError::new(format!(
-            "OAuth login needs an OAuth consumer. At \
-             https://bitbucket.org/<workspace>/workspace/settings/api add a consumer with \
-             callback URL {redirect_uri} and the scopes you need (account, repository, \
-             pullrequest), enable \"This is a private consumer\", then set BB_OAUTH_CLIENT_ID \
-             and BB_OAUTH_CLIENT_SECRET and re-run `bb auth login --web`.",
+            "OAuth login (--web) needs a one-time OAuth consumer:\n\
+             1. Open https://bitbucket.org/<workspace>/workspace/settings/api and click \"Add consumer\".\n\
+             2. Set Callback URL to exactly: {redirect_uri}\n\
+             3. Grant permissions: Account (read), Repositories (read/write), Pull requests (read/write).\n\
+             4. Save, then copy the Key and Secret and run:\n\
+             \u{20}     bb auth login --web --client-id <KEY> --client-secret <SECRET>\n\
+             bb stores them, so afterwards plain `bb auth login --web` works. \
+             (Or export BB_OAUTH_CLIENT_ID / BB_OAUTH_CLIENT_SECRET.)"
         ))
         .into());
     };
@@ -331,6 +346,7 @@ fn exchange_and_store(
         ctx.config.set(host, "refresh_token", refresh)?;
     }
     ctx.config.set(host, "oauth_client_id", client_id)?;
+    ctx.config.set(host, "oauth_client_secret", client_secret)?;
     ctx.config.save()?;
 
     Ok(user.label())
@@ -455,6 +471,8 @@ mod tests {
             with_token: false,
             username: None,
             auth_type: None,
+            client_id: None,
+            client_secret: None,
         }
     }
 
