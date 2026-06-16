@@ -6,8 +6,6 @@ mod checks;
 mod close;
 mod create;
 mod diff;
-// Used by the pr subcommands as they land (#19–#25).
-#[allow(dead_code)]
 mod finder;
 mod list;
 mod merge;

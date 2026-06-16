@@ -4,6 +4,8 @@
 use bb_api::{BitbucketClient, PullRequest};
 use bb_core::{Context, FlagError, RepoId};
 
+use crate::render::percent_encode;
+
 /// Resolve a PR from an optional `selector`:
 /// - `Some("123")` / `Some("#123")` → fetch by id.
 /// - `None` → the most recent OPEN PR whose source branch is the current branch.
@@ -62,7 +64,7 @@ fn find_by_branch(
 ) -> anyhow::Result<PullRequest> {
     // Escape the BBQL string literal (quotes/backslashes) before encoding.
     let escaped = branch.replace('\\', "\\\\").replace('"', "\\\"");
-    let q = encode_query(&format!("source.branch.name=\"{escaped}\""));
+    let q = percent_encode(&format!("source.branch.name=\"{escaped}\""));
     let path = format!(
         "/repositories/{}/{}/pullrequests?state=OPEN&q={q}",
         repo.workspace(),
@@ -72,20 +74,6 @@ fn find_by_branch(
     prs.into_iter().next().ok_or_else(|| {
         anyhow::anyhow!("no open pull request found for branch {branch:?}; pass a PR id")
     })
-}
-
-/// Percent-encode a query-string component.
-fn encode_query(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }
 
 #[cfg(test)]

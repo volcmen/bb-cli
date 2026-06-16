@@ -6,6 +6,7 @@ use bb_core::{AuthError, ColorScheme, Context};
 use clap::Args;
 
 use crate::auth;
+use crate::render::{pad, sanitize};
 
 /// JSON fields a pipeline can be projected to with `--json`.
 const FIELDS: &[&str] = &["uuid", "build_number", "state", "target", "created_on"];
@@ -157,12 +158,6 @@ fn render_tsv(pipelines: &[Pipeline]) -> String {
     out
 }
 
-/// Replace tab/CR/LF (which would corrupt TSV columns and table rows) with a
-/// single space, so an odd ref name can't break the layout.
-fn sanitize(s: &str) -> String {
-    s.replace(['\t', '\r', '\n'], " ")
-}
-
 /// Color a pipeline result: SUCCESSFUL green, FAILED/ERROR red, anything else gray.
 fn color_result(cs: ColorScheme, result: &str) -> String {
     match result {
@@ -170,16 +165,6 @@ fn color_result(cs: ColorScheme, result: &str) -> String {
         "FAILED" | "ERROR" => cs.red(result),
         other => cs.gray(other),
     }
-}
-
-/// Right-pad `s` so its *visible* width (`plain_len`, ignoring ANSI codes)
-/// reaches `target`.
-fn pad(s: &str, plain_len: usize, target: usize) -> String {
-    let mut out = s.to_owned();
-    if plain_len < target {
-        out.push_str(&" ".repeat(target - plain_len));
-    }
-    out
 }
 
 #[cfg(test)]
