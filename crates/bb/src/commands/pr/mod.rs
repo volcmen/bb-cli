@@ -6,6 +6,7 @@ mod checks;
 mod close;
 mod create;
 mod diff;
+mod edit;
 mod finder;
 mod list;
 mod merge;
@@ -25,6 +26,8 @@ pub struct PrArgs {
 enum PrCommands {
     /// Create a pull request
     Create(create::CreateArgs),
+    /// Edit a pull request's title, description, or base branch
+    Edit(edit::EditArgs),
     /// List pull requests
     List(list::ListArgs),
     /// View a pull request
@@ -50,6 +53,7 @@ enum PrCommands {
 pub fn run(ctx: &Context, args: PrArgs) -> anyhow::Result<()> {
     match args.command {
         PrCommands::Create(a) => create::run(ctx, a),
+        PrCommands::Edit(a) => edit::run(ctx, a),
         PrCommands::List(a) => list::run(ctx, a),
         PrCommands::View(a) => view::run(ctx, a),
         PrCommands::Diff(a) => diff::run(ctx, a),

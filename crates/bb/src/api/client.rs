@@ -128,6 +128,20 @@ impl BitbucketClient {
         decode(&resp.body)
     }
 
+    /// `PUT path` with a JSON `body` → deserialize the JSON response as `T`.
+    ///
+    /// # Errors
+    /// As [`BitbucketClient::get`], plus serialization failure of `body`.
+    pub fn put<T: DeserializeOwned, B: serde::Serialize>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T, ApiError> {
+        let bytes = serde_json::to_vec(body).map_err(|e| ApiError::Decode(e.to_string()))?;
+        let resp = self.send(Method::Put, path, Some(bytes))?;
+        decode(&resp.body)
+    }
+
     /// Send a request whose response body we don't parse (e.g. approve/decline).
     ///
     /// # Errors
