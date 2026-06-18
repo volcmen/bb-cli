@@ -42,15 +42,17 @@ pub fn run(
     let mut guard = terminal::TerminalGuard::new()?;
     let mut app = App::new(authed);
 
+    let pr_filter = PrFilter {
+        state: "OPEN".to_owned(),
+        base: None,
+        limit: 30,
+    };
+
     let worker = match (authed, repo) {
         (true, Some(repo)) => {
             let worker = Worker::spawn(transport, header, repo);
             app.begin(RequestKind::Prs);
-            worker.send(Request::Prs(PrFilter {
-                state: "OPEN".to_owned(),
-                base: None,
-                limit: 30,
-            }));
+            worker.send(Request::Prs(pr_filter.clone()));
             Some(worker)
         }
         (true, None) => {
@@ -68,7 +70,16 @@ pub fn run(
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
                     if let Some(msg) = keymap::map_key(key) {
-                        app.update(msg);
+                        // Refresh re-issues the section's request through the worker;
+                        // everything else folds into the model.
+                        if msg == Msg::Refresh {
+                            if let Some(worker) = &worker {
+                                app.begin(RequestKind::Prs);
+                                worker.send(Request::Prs(pr_filter.clone()));
+                            }
+                        } else {
+                            app.update(msg);
+                        }
                     }
                 }
             }
