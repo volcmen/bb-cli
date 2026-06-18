@@ -16,7 +16,7 @@ use std::time::Duration;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 
 use crate::commands::pr::query::PrFilter;
-use crate::core::{RepoId, Transport};
+use crate::core::{Browser, RepoId, Transport};
 
 use app::{App, Msg};
 use worker::{Request, RequestKind, Worker};
@@ -38,6 +38,7 @@ pub fn run(
     repo: Option<RepoId>,
     transport: Arc<dyn Transport>,
     header: Option<String>,
+    browser: Arc<dyn Browser>,
 ) -> anyhow::Result<()> {
     let mut guard = terminal::TerminalGuard::new()?;
     let mut app = App::new(authed);
@@ -70,15 +71,29 @@ pub fn run(
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
                     if let Some(msg) = keymap::map_key(key) {
-                        // Refresh re-issues the section's request through the worker;
-                        // everything else folds into the model.
-                        if msg == Msg::Refresh {
-                            if let Some(worker) = &worker {
-                                app.begin(RequestKind::Prs);
-                                worker.send(Request::Prs(pr_filter.clone()));
+                        // Requests that touch the worker / Browser seam are acted on
+                        // here; everything else folds into the model.
+                        match msg {
+                            Msg::Refresh => {
+                                if let Some(worker) = &worker {
+                                    app.begin(RequestKind::Prs);
+                                    worker.send(Request::Prs(pr_filter.clone()));
+                                }
                             }
-                        } else {
-                            app.update(msg);
+                            Msg::Open => {
+                                if let Some(id) = app.selected_pr_id() {
+                                    app.update(Msg::Open);
+                                    if let Some(worker) = &worker {
+                                        worker.send(Request::PrDetail(id));
+                                    }
+                                }
+                            }
+                            Msg::OpenBrowser => {
+                                if let Some(url) = app.current_url() {
+                                    let _ = browser.browse(url);
+                                }
+                            }
+                            other => app.update(other),
                         }
                     }
                 }

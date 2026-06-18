@@ -27,6 +27,8 @@ pub fn map_key(key: KeyEvent) -> Option<Msg> {
         KeyCode::Char('d') if ctrl => Some(Msg::HalfPageDown),
         KeyCode::Char('u') if ctrl => Some(Msg::HalfPageUp),
         KeyCode::Char('r') => Some(Msg::Refresh),
+        KeyCode::Enter | KeyCode::Char('l') => Some(Msg::Open),
+        KeyCode::Char('o') => Some(Msg::OpenBrowser),
         _ => None,
     }
 }
