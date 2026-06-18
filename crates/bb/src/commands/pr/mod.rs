@@ -12,6 +12,7 @@ mod finder;
 mod list;
 mod merge;
 mod render;
+mod review;
 mod view;
 
 use crate::core::Context;
@@ -41,6 +42,8 @@ enum PrCommands {
     Close(close::CloseArgs),
     /// Approve a pull request (or remove your approval)
     Approve(approve::ApproveArgs),
+    /// Review a pull request (approve / request-changes / comment)
+    Review(review::ReviewArgs),
     /// Check out a pull request's branch locally
     Checkout(checkout::CheckoutArgs),
     /// Show CI/build checks for a pull request
@@ -63,6 +66,7 @@ pub fn run(ctx: &Context, args: PrArgs) -> anyhow::Result<()> {
         PrCommands::Merge(a) => merge::run(ctx, a),
         PrCommands::Close(a) => close::run(ctx, a),
         PrCommands::Approve(a) => approve::run(ctx, a),
+        PrCommands::Review(a) => review::run(ctx, a),
         PrCommands::Checkout(a) => checkout::run(ctx, a),
         PrCommands::Checks(a) => checks::run(ctx, a),
         PrCommands::Comment(a) => comment::run(ctx, a),
