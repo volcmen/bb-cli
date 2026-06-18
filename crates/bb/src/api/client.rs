@@ -142,6 +142,36 @@ impl BitbucketClient {
         decode(&resp.body)
     }
 
+    /// Send a `multipart/form-data` request (e.g. Snippet create/edit) and
+    /// deserialize the JSON response as `T`. Built separately from
+    /// [`BitbucketClient::send`] because [`BitbucketClient::build_request`] always
+    /// sets a JSON `Content-Type` when a body is present.
+    ///
+    /// # Errors
+    /// Returns [`ApiError`] on transport failure, non-2xx status, or decode
+    /// failure.
+    pub fn send_multipart<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        parts: &[MultipartPart],
+    ) -> Result<T, ApiError> {
+        let (body, content_type) = encode_multipart(parts);
+        let url = self.full_url(path);
+        let mut req = HttpRequest::new(method, &url).header("Accept", "application/json");
+        if let Some(h) = &self.auth_header {
+            req = req.header("Authorization", h.clone());
+        }
+        req = req.header("Content-Type", content_type).body(body);
+
+        let resp = self.transport.execute(req)?;
+        if resp.is_success() {
+            decode(&resp.body)
+        } else {
+            Err(map_http_error(&url, &resp))
+        }
+    }
+
     /// Send a request whose response body we don't parse (e.g. approve/decline).
     ///
     /// # Errors
@@ -202,6 +232,71 @@ impl BitbucketClient {
 
 fn decode<T: DeserializeOwned>(body: &[u8]) -> Result<T, ApiError> {
     serde_json::from_slice(body).map_err(|e| ApiError::Decode(e.to_string()))
+}
+
+/// One part of a `multipart/form-data` body. A `filename` makes it a file part
+/// (Bitbucket uses the form field name as the snippet filename).
+pub struct MultipartPart {
+    pub field_name: String,
+    pub filename: Option<String>,
+    pub value: Vec<u8>,
+}
+
+impl MultipartPart {
+    /// A file part (field name = filename, per Bitbucket's snippet API).
+    #[must_use]
+    pub fn file(filename: impl Into<String>, value: Vec<u8>) -> Self {
+        let filename = filename.into();
+        Self {
+            field_name: filename.clone(),
+            filename: Some(filename),
+            value,
+        }
+    }
+
+    /// A plain text field (e.g. `title`, `is_private`).
+    #[must_use]
+    pub fn field(name: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            field_name: name.into(),
+            filename: None,
+            value: value.into().into_bytes(),
+        }
+    }
+}
+
+/// A fixed boundary — extremely unlikely to collide with snippet content.
+const MULTIPART_BOUNDARY: &str = "bbCLIb0undaryQx7vK3mZ9pLw2";
+
+/// Encode `parts` into a `multipart/form-data` body, returning the body bytes and
+/// the matching `Content-Type` value.
+fn encode_multipart(parts: &[MultipartPart]) -> (Vec<u8>, String) {
+    let mut body = Vec::new();
+    for part in parts {
+        body.extend_from_slice(format!("--{MULTIPART_BOUNDARY}\r\n").as_bytes());
+        match &part.filename {
+            Some(filename) => body.extend_from_slice(
+                format!(
+                    "Content-Disposition: form-data; name=\"{}\"; filename=\"{}\"\r\n\r\n",
+                    part.field_name, filename
+                )
+                .as_bytes(),
+            ),
+            None => body.extend_from_slice(
+                format!(
+                    "Content-Disposition: form-data; name=\"{}\"\r\n\r\n",
+                    part.field_name
+                )
+                .as_bytes(),
+            ),
+        }
+        body.extend_from_slice(&part.value);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{MULTIPART_BOUNDARY}--\r\n").as_bytes());
+
+    let content_type = format!("multipart/form-data; boundary={MULTIPART_BOUNDARY}");
+    (body, content_type)
 }
 
 fn map_http_error(url: &str, resp: &HttpResponse) -> ApiError {

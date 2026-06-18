@@ -323,6 +323,54 @@ impl PullRequest {
     }
 }
 
+/// A Bitbucket Snippet (the `gh gist` analog).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Snippet {
+    pub id: Option<String>,
+    pub title: Option<String>,
+    pub is_private: Option<bool>,
+    pub owner: Option<User>,
+    pub created_on: Option<String>,
+    pub links: Option<RepoLinks>,
+    /// Files keyed by filename.
+    #[serde(default)]
+    pub files: std::collections::BTreeMap<String, SnippetFile>,
+}
+
+/// One file within a snippet (`files: { "<name>": { ... } }`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SnippetFile {
+    pub links: Option<RepoLinks>,
+}
+
+impl Snippet {
+    /// The web (html) URL, if present.
+    #[must_use]
+    pub fn html_url(&self) -> Option<&str> {
+        self.links
+            .as_ref()
+            .and_then(|l| l.html.as_ref())
+            .map(|h| h.href.as_str())
+    }
+
+    /// The clone URL for `protocol` (`"https"` | `"ssh"`), if present.
+    #[must_use]
+    pub fn clone_url(&self, protocol: &str) -> Option<&str> {
+        self.links
+            .as_ref()?
+            .clone
+            .iter()
+            .find(|c| c.name.as_deref() == Some(protocol))
+            .map(|c| c.href.as_str())
+    }
+
+    /// The filenames in this snippet, sorted.
+    #[must_use]
+    pub fn filenames(&self) -> Vec<&str> {
+        self.files.keys().map(String::as_str).collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

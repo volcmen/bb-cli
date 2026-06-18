@@ -7,7 +7,8 @@ use clap::{CommandFactory, Parser, Subcommand};
 use crate::commands::{
     alias::AliasArgs, api::ApiArgs, auth::AuthArgs, browse::BrowseArgs, completion::CompletionArgs,
     config::ConfigArgs, issue::IssueArgs, man::ManArgs, pipeline::PipelineArgs, pr::PrArgs,
-    repo::RepoArgs, search::SearchArgs, ssh_key::SshKeyArgs, variable::VariableArgs,
+    repo::RepoArgs, search::SearchArgs, snippet::SnippetArgs, ssh_key::SshKeyArgs,
+    variable::VariableArgs,
 };
 use crate::factory;
 
@@ -74,6 +75,8 @@ enum Commands {
     Variable(VariableArgs),
     /// Manage command aliases
     Alias(AliasArgs),
+    /// Create and manage snippets
+    Snippet(SnippetArgs),
 }
 
 /// Parse an explicit argv (`[0]` = program name); used after alias expansion.
@@ -163,6 +166,10 @@ pub fn dispatch(cli: Cli) -> anyhow::Result<()> {
         Some(Commands::Alias(args)) => {
             let ctx = factory::build_context(repo_override)?;
             crate::commands::alias::run(&ctx, args)
+        }
+        Some(Commands::Snippet(args)) => {
+            let ctx = factory::build_context(repo_override)?;
+            crate::commands::snippet::run(&ctx, args)
         }
 
         None => {
