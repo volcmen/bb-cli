@@ -5,7 +5,7 @@ use crate::core::{FlagError, RepoId};
 use clap::{CommandFactory, Parser, Subcommand};
 
 use crate::commands::{
-    api::ApiArgs, auth::AuthArgs, browse::BrowseArgs, completion::CompletionArgs,
+    alias::AliasArgs, api::ApiArgs, auth::AuthArgs, browse::BrowseArgs, completion::CompletionArgs,
     config::ConfigArgs, issue::IssueArgs, man::ManArgs, pipeline::PipelineArgs, pr::PrArgs,
     repo::RepoArgs, search::SearchArgs, ssh_key::SshKeyArgs, variable::VariableArgs,
 };
@@ -72,12 +72,25 @@ enum Commands {
     Search(SearchArgs),
     /// Manage Pipelines variables
     Variable(VariableArgs),
+    /// Manage command aliases
+    Alias(AliasArgs),
 }
 
-/// Parse process arguments (auto-exits on `--version`/`--help`/parse errors).
+/// Parse an explicit argv (`[0]` = program name); used after alias expansion.
+/// Auto-exits on `--version`/`--help`/parse errors, like [`parse`].
 #[must_use]
-pub fn parse() -> Cli {
-    Cli::parse()
+pub fn parse_from(argv: Vec<String>) -> Cli {
+    Cli::parse_from(argv)
+}
+
+/// The names of all top-level subcommands (so alias expansion never shadows a
+/// built-in). Derived from the clap tree to stay in sync.
+#[must_use]
+pub fn builtin_names() -> Vec<String> {
+    Cli::command()
+        .get_subcommands()
+        .map(|c| c.get_name().to_owned())
+        .collect()
 }
 
 /// Run the matched command.
@@ -146,6 +159,10 @@ pub fn dispatch(cli: Cli) -> anyhow::Result<()> {
         Some(Commands::Variable(args)) => {
             let ctx = factory::build_context(repo_override)?;
             crate::commands::variable::run(&ctx, args)
+        }
+        Some(Commands::Alias(args)) => {
+            let ctx = factory::build_context(repo_override)?;
+            crate::commands::alias::run(&ctx, args)
         }
 
         None => {

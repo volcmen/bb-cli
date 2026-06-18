@@ -2,6 +2,7 @@
 //! args + a [`Context`](crate::core::Context) into an action, mirroring `gh`'s
 //! one-package-per-command layout.
 
+pub mod alias;
 pub mod api;
 pub mod auth;
 pub mod browse;
