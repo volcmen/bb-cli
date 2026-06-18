@@ -48,6 +48,8 @@ pub struct Repository {
     pub mainbranch: Option<MainBranch>,
     pub links: Option<RepoLinks>,
     pub has_issues: Option<bool>,
+    /// The upstream repository this one was forked from, if any (`bb repo sync`).
+    pub parent: Option<RepoRef>,
 }
 
 /// A repository's `links` (the subset we use: web URL + clone URLs).

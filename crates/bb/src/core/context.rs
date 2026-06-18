@@ -1,11 +1,19 @@
 //! [`Context`] — the dependency container (the analog of `gh`'s Factory).
 
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::core::error::GitError;
 use crate::core::io::IoStreams;
 use crate::core::repo::RepoId;
 use crate::core::traits::{Browser, ConfigProvider, GitClient, Prompter, Transport};
+
+/// The `config.toml` key under which `bb repo set-default` stores the chosen
+/// repository for `dir` (the per-directory default consulted by [`Context::base_repo`]).
+#[must_use]
+pub fn default_repo_key(dir: &Path) -> String {
+    format!("default_repo:{}", dir.display())
+}
 
 /// Holds the injected seam-trait objects so every command is testable by
 /// swapping implementations. Cheap to [`Clone`] (everything is `Arc`).
@@ -33,10 +41,23 @@ impl Context {
         if let Some(r) = &self.repo_override {
             return Ok(r.clone());
         }
+        if let Some(r) = self.configured_default_repo() {
+            return Ok(r);
+        }
         let remotes = self.git.remotes()?;
         remotes.into_iter().next().map(|r| r.repo).ok_or_else(|| {
             GitError::Other("no Bitbucket git remote found; pass --repo WORKSPACE/SLUG".to_owned())
         })
+    }
+
+    /// The per-directory default repository persisted by `bb repo set-default`
+    /// for the current working directory, if set and parseable. Read from
+    /// [`ConfigProvider`] (no git shell-out), so an empty/garbage value simply
+    /// falls through to git-remote resolution.
+    fn configured_default_repo(&self) -> Option<RepoId> {
+        let dir = std::env::current_dir().ok()?;
+        let value = self.config.get("", &default_repo_key(&dir))?;
+        value.parse().ok()
     }
 
     /// The host the command targets (the override's host, else the config

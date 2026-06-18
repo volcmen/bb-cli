@@ -6,6 +6,8 @@ mod delete;
 mod edit;
 mod fork;
 mod list;
+mod set_default;
+mod sync;
 mod view;
 
 use crate::core::Context;
@@ -35,6 +37,10 @@ enum RepoCommands {
     Delete(delete::DeleteArgs),
     /// List repositories in a workspace
     List(list::ListArgs),
+    /// Set the default repository for the current directory
+    SetDefault(set_default::SetDefaultArgs),
+    /// Sync a fork's current branch with its upstream
+    Sync(sync::SyncArgs),
 }
 
 /// Dispatch `bb repo <sub>`.
@@ -51,5 +57,7 @@ pub fn run(ctx: &Context, args: RepoArgs) -> anyhow::Result<()> {
         RepoCommands::Rename(a) => edit::run_rename(ctx, a),
         RepoCommands::Delete(a) => delete::run(ctx, a),
         RepoCommands::List(a) => list::run(ctx, a),
+        RepoCommands::SetDefault(a) => set_default::run(ctx, a),
+        RepoCommands::Sync(a) => sync::run(ctx, a),
     }
 }

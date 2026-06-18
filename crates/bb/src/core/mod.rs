@@ -22,7 +22,7 @@ pub mod io;
 pub mod repo;
 pub mod traits;
 
-pub use context::Context;
+pub use context::{default_repo_key, Context};
 pub use error::{
     ApiError, ApiErrorItem, AuthError, CancelError, ConfigError, ExitCode, FlagError, GitError,
     PromptError, SilentError,

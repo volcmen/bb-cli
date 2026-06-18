@@ -119,6 +119,10 @@ impl GitClient for ShellGit {
         self.run(&["fetch", remote, refspec]).map(|_| ())
     }
 
+    fn merge_ff(&self, committish: &str) -> Result<(), GitError> {
+        self.run(&["merge", "--ff-only", committish]).map(|_| ())
+    }
+
     fn checkout(&self, branch: &str) -> Result<(), GitError> {
         self.run(&["checkout", branch]).map(|_| ())
     }
