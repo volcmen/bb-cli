@@ -6,6 +6,7 @@
 //! the blocking loop that merges input, worker responses, and a tick timer.
 
 mod app;
+pub(crate) mod config;
 mod keymap;
 mod terminal;
 mod worker;
@@ -40,9 +41,16 @@ pub fn run(
     transport: Arc<dyn Transport>,
     header: Option<String>,
     browser: Arc<dyn Browser>,
+    dash_config: config::DashConfig,
+    config_warnings: Vec<String>,
 ) -> anyhow::Result<()> {
     let mut guard = terminal::TerminalGuard::new()?;
     let mut app = App::new(authed);
+    app.theme = dash_config.theme;
+    app.active_tab = dash_config.default_tab;
+    if !config_warnings.is_empty() {
+        app.status = Some(format!("config: {}", config_warnings.join("; ")));
+    }
 
     let pr_filter = PrFilter {
         state: "OPEN".to_owned(),
@@ -54,10 +62,12 @@ pub fn run(
         limit: 30,
     };
     let pipeline_limit = 30usize;
-    // Auto-refresh cadence for running pipelines: poll roughly every 5s (the tick
-    // is ~120ms), bounded so it never hammers the API.
+    // Auto-refresh cadence for running pipelines (the tick is ~120ms), from config
+    // and bounded so it never hammers the API.
     let mut ticks_since_poll = 0u32;
-    const POLL_EVERY_TICKS: u32 = 40;
+    let poll_every_ticks = u32::try_from(dash_config.refresh_secs * 1000 / 120)
+        .unwrap_or(40)
+        .max(1);
 
     let worker = match (authed, repo) {
         (true, Some(repo)) => {
@@ -98,7 +108,7 @@ pub fn run(
             ticks_since_poll += 1;
             // Live pipeline refresh: while any run is in progress, re-fetch on a
             // bounded cadence; stops automatically once all are terminal.
-            if ticks_since_poll >= POLL_EVERY_TICKS {
+            if ticks_since_poll >= poll_every_ticks {
                 ticks_since_poll = 0;
                 if app.pipelines_active() {
                     if let Some(worker) = &worker {
