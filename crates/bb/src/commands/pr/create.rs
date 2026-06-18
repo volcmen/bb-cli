@@ -49,8 +49,8 @@ struct Endpoint<'a> {
 }
 
 #[derive(serde::Serialize)]
-struct Reviewer {
-    uuid: String,
+pub(super) struct Reviewer {
+    pub(super) uuid: String,
 }
 
 #[derive(serde::Serialize)]
@@ -199,7 +199,7 @@ fn default_base(client: &BitbucketClient, repo: &RepoId) -> anyhow::Result<Strin
 /// Returns [`FlagError`] naming every requested reviewer that did not match a
 /// member (or matched a member that has no UUID). Propagates API errors from the
 /// member fetch.
-fn resolve_reviewers(
+pub(super) fn resolve_reviewers(
     client: &BitbucketClient,
     repo: &RepoId,
     requested: &[String],
@@ -241,7 +241,7 @@ fn resolve_reviewers(
 
 /// Whether `user` matches the requested reviewer string on any identity field,
 /// compared case-insensitively.
-fn member_matches(user: &crate::api::User, want: &str) -> bool {
+pub(super) fn member_matches(user: &crate::api::User, want: &str) -> bool {
     [
         user.uuid.as_deref(),
         user.account_id.as_deref(),
