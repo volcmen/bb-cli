@@ -12,7 +12,7 @@ mod edit;
 mod finder;
 mod list;
 mod merge;
-mod query;
+pub(crate) mod query;
 mod render;
 mod review;
 mod status;

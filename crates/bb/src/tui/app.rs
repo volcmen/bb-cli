@@ -9,6 +9,13 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
+use crate::api::models::PullRequest;
+
+use super::worker::{RequestKind, Response};
+
+/// Spinner frames advanced by [`Msg::Tick`] while a request is in flight.
+const SPINNER: [char; 4] = ['|', '/', '-', '\\'];
+
 /// The top-level sections (number keys `1/2/3` jump to them).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -55,6 +62,8 @@ pub enum Msg {
     Bottom,
     HalfPageDown,
     HalfPageUp,
+    /// Timer tick — advances the spinner (and later drives auto-refresh).
+    Tick,
 }
 
 /// The dashboard state.
@@ -65,6 +74,13 @@ pub struct App {
     pub active_tab: Tab,
     pub modal: Option<Modal>,
     pub should_quit: bool,
+    /// Loaded pull requests (populated by [`App::apply_response`]).
+    pub prs: Vec<PullRequest>,
+    /// In-flight request kinds (drives the spinner).
+    pub loading: Vec<RequestKind>,
+    /// Transient status/error toast.
+    pub status: Option<String>,
+    spinner: usize,
 }
 
 impl App {
@@ -75,7 +91,42 @@ impl App {
             active_tab: Tab::PullRequests,
             modal: None,
             should_quit: false,
+            prs: Vec::new(),
+            loading: Vec::new(),
+            status: None,
+            spinner: 0,
         }
+    }
+
+    /// Mark a request kind as in flight (UI sent a [`Request`](super::worker::Request)).
+    pub fn begin(&mut self, kind: RequestKind) {
+        if !self.loading.contains(&kind) {
+            self.loading.push(kind);
+        }
+    }
+
+    fn done(&mut self, kind: RequestKind) {
+        self.loading.retain(|k| *k != kind);
+    }
+
+    /// Fold a worker [`Response`] into the model.
+    pub fn apply_response(&mut self, response: Response) {
+        match response {
+            Response::Prs(prs) => {
+                self.prs = prs;
+                self.done(RequestKind::Prs);
+            }
+            Response::Error(message, kind) => {
+                self.done(kind);
+                self.status = Some(message);
+            }
+        }
+    }
+
+    /// Whether any request is in flight.
+    #[must_use]
+    pub fn is_loading(&self) -> bool {
+        !self.loading.is_empty()
     }
 
     /// Apply a semantic message to the model.
@@ -106,6 +157,11 @@ impl App {
                 let len = Tab::ALL.len();
                 let prev = (self.active_tab.index() + len - 1) % len;
                 self.active_tab = Tab::ALL[prev];
+            }
+            Msg::Tick => {
+                if self.is_loading() {
+                    self.spinner = (self.spinner + 1) % SPINNER.len();
+                }
             }
             // Motions are no-ops until a list view exists (036+); the bindings are
             // wired now so the keymap grammar is stable.
@@ -155,10 +211,17 @@ impl App {
         let block = Block::default()
             .borders(Borders::ALL)
             .title(self.active_tab.title());
-        let text = if self.authed {
-            format!("{} — loading soon…", self.active_tab.title())
-        } else {
+        let text = if !self.authed {
             "Not logged in — run `bb auth login`".to_owned()
+        } else if let Some(status) = &self.status {
+            format!("⚠ {status}")
+        } else if self.is_loading() {
+            format!("{} Loading…", SPINNER[self.spinner])
+        } else {
+            match self.active_tab {
+                Tab::PullRequests => format!("{} pull request(s)", self.prs.len()),
+                other => format!("{} — coming soon", other.title()),
+            }
         };
         Paragraph::new(text).block(block)
     }
@@ -247,6 +310,39 @@ mod tests {
         // Out-of-range tab index is ignored.
         app.update(Msg::SelectTab(9));
         assert_eq!(app.active_tab, Tab::Pipelines);
+    }
+
+    #[test]
+    fn response_prs_populates_rows_and_clears_loading() {
+        let mut app = App::new(true);
+        app.begin(RequestKind::Prs);
+        assert!(app.is_loading());
+        let prs: Vec<PullRequest> =
+            serde_json::from_str(r#"[{"id":7,"title":"T","state":"OPEN"}]"#).unwrap();
+        app.apply_response(Response::Prs(prs));
+        assert_eq!(app.prs.len(), 1);
+        assert_eq!(app.prs[0].id, 7);
+        assert!(!app.is_loading());
+    }
+
+    #[test]
+    fn response_error_sets_status_and_clears_loading() {
+        let mut app = App::new(true);
+        app.begin(RequestKind::Prs);
+        app.apply_response(Response::Error("boom".to_owned(), RequestKind::Prs));
+        assert_eq!(app.status.as_deref(), Some("boom"));
+        assert!(!app.is_loading());
+    }
+
+    #[test]
+    fn tick_advances_spinner_only_while_loading() {
+        let mut app = App::new(true);
+        let before = app.spinner;
+        app.update(Msg::Tick);
+        assert_eq!(app.spinner, before, "idle tick must not advance");
+        app.begin(RequestKind::Prs);
+        app.update(Msg::Tick);
+        assert_ne!(app.spinner, before, "loading tick advances the spinner");
     }
 
     #[test]
