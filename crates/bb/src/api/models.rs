@@ -323,6 +323,34 @@ impl PullRequest {
     }
 }
 
+/// A repository webhook (`.../hooks`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Webhook {
+    pub uuid: Option<String>,
+    pub url: Option<String>,
+    pub description: Option<String>,
+    pub active: Option<bool>,
+    #[serde(default)]
+    pub events: Vec<String>,
+}
+
+/// A repository deploy key (`.../deploy-keys`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DeployKey {
+    pub id: Option<i64>,
+    pub label: Option<String>,
+    pub key: Option<String>,
+}
+
+/// A branch restriction (`.../branch-restrictions`; the BB branch-protection unit).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BranchRestriction {
+    pub id: Option<i64>,
+    pub kind: Option<String>,
+    pub pattern: Option<String>,
+    pub branch_match_kind: Option<String>,
+}
+
 /// A Bitbucket workspace.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Workspace {
