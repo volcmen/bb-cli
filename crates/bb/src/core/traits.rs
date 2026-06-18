@@ -39,6 +39,8 @@ pub trait GitClient: Send + Sync {
     fn commits_between(&self, base: &str, head: &str) -> Result<Vec<Commit>, GitError>;
     /// `git fetch <remote> <refspec>`.
     fn fetch(&self, remote: &str, refspec: &str) -> Result<(), GitError>;
+    /// `git merge --ff-only <committish>` (fast-forward the current branch).
+    fn merge_ff(&self, committish: &str) -> Result<(), GitError>;
     /// `git checkout <branch>`.
     fn checkout(&self, branch: &str) -> Result<(), GitError>;
     /// `git remote add <name> <url>`.
