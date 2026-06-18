@@ -1,6 +1,6 @@
 //! `bb pr` — pull request commands.
 
-mod actions;
+pub(crate) mod actions;
 mod approve;
 mod checkout;
 mod checks;

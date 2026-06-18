@@ -11,7 +11,8 @@ use std::thread::JoinHandle;
 
 use crate::api::models::{CommitStatus, PullRequest};
 use crate::api::BitbucketClient;
-use crate::commands::pr::query::{self, PrFilter};
+use crate::commands::pr::query::PrFilter;
+use crate::commands::pr::{actions, query};
 use crate::core::{RepoId, Transport};
 use std::sync::Arc;
 
@@ -21,6 +22,7 @@ use std::sync::Arc;
 pub enum RequestKind {
     Prs,
     PrDetail,
+    Action,
 }
 
 /// A unit of work for the worker thread.
@@ -30,6 +32,16 @@ pub enum Request {
     Prs(PrFilter),
     /// Fetch one PR plus its CI checks (the detail pane).
     PrDetail(u64),
+    /// Approve a pull request.
+    Approve(u64),
+    /// Remove your approval.
+    Unapprove(u64),
+    /// Merge a pull request (default strategy; no close-source-branch).
+    Merge(u64),
+    /// Decline a pull request.
+    Decline(u64),
+    /// Comment on a pull request.
+    Comment(u64, String),
 }
 
 /// A result delivered back to the UI thread.
@@ -41,6 +53,8 @@ pub enum Response {
         pr: Box<PullRequest>,
         checks: Vec<CommitStatus>,
     },
+    /// A mutation succeeded — carries a success toast (the UI auto-refreshes).
+    ActionDone(String),
     /// A human-facing error message + the request kind it belongs to.
     Error(String, RequestKind),
 }
@@ -119,6 +133,35 @@ fn handle_request(client: &BitbucketClient, repo: &RepoId, request: Request) -> 
             }
             Err(e) => Response::Error(format!("{e}"), RequestKind::PrDetail),
         },
+        Request::Approve(id) => action(
+            actions::approve(client, repo, id),
+            format!("✓ Approved PR #{id}"),
+        ),
+        Request::Unapprove(id) => action(
+            actions::unapprove(client, repo, id),
+            format!("✓ Removed approval from PR #{id}"),
+        ),
+        Request::Merge(id) => action(
+            actions::merge(client, repo, id, "merge_commit", None, false).map(|_| ()),
+            format!("✓ Merged PR #{id}"),
+        ),
+        Request::Decline(id) => action(
+            actions::decline(client, repo, id, None).map(|_| ()),
+            format!("✓ Declined PR #{id}"),
+        ),
+        Request::Comment(id, body) => action(
+            actions::comment(client, repo, id, &body).map(|_| ()),
+            format!("✓ Commented on PR #{id}"),
+        ),
+    }
+}
+
+/// Map a mutation result to an [`ActionDone`](Response::ActionDone) toast or an
+/// [`Error`](Response::Error) tagged [`RequestKind::Action`].
+fn action(result: Result<(), crate::core::ApiError>, success: String) -> Response {
+    match result {
+        Ok(()) => Response::ActionDone(success),
+        Err(e) => Response::Error(format!("{e}"), RequestKind::Action),
     }
 }
 
@@ -184,6 +227,24 @@ mod tests {
                 assert_eq!(checks.len(), 1);
             }
             other => panic!("expected PrDetail, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn approve_action_yields_action_done() {
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "approve",
+            FakeTransport::rest(Method::Post, "/pullrequests/42/approve"),
+            FakeTransport::json(200, r#"{"approved":true}"#),
+        );
+        let transport: Arc<dyn Transport> = h;
+        let worker = Worker::spawn(transport, None, RepoId::new("acme", "widgets"));
+
+        worker.send(Request::Approve(42));
+        match worker.rx.recv().unwrap() {
+            Response::ActionDone(msg) => assert!(msg.contains("Approved"), "msg: {msg}"),
+            other => panic!("expected ActionDone, got {other:?}"),
         }
     }
 
