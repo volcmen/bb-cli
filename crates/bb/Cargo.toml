@@ -39,6 +39,8 @@ getrandom.workspace = true
 sha2.workspace = true
 # git integration
 which.workspace = true
+# TUI dashboard (bb dash)
+ratatui.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true

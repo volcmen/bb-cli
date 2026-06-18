@@ -17,6 +17,7 @@ mod refresh;
 mod render;
 #[cfg(test)]
 mod testsupport;
+mod tui;
 
 use std::process::ExitCode;
 
