@@ -47,6 +47,10 @@ pub trait GitClient: Send + Sync {
     fn add_remote(&self, name: &str, url: &str) -> Result<(), GitError>;
     /// `git clone <url> [dir]`.
     fn clone_repo(&self, url: &str, dir: Option<&str>) -> Result<(), GitError>;
+    /// `git config --global <key> <value>` (sets a single value, replacing any).
+    fn config_set_global(&self, key: &str, value: &str) -> Result<(), GitError>;
+    /// `git config --global --add <key> <value>` (appends a value).
+    fn config_add_global(&self, key: &str, value: &str) -> Result<(), GitError>;
 }
 
 /// Interactive prompt seam. The real impl uses `inquire`; tests use a scripted
