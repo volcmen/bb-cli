@@ -2,6 +2,7 @@
 
 mod comment;
 mod create;
+mod edit;
 mod list;
 mod view;
 
@@ -35,6 +36,12 @@ enum IssueCommands {
     Create(create::CreateArgs),
     /// Comment on an issue
     Comment(comment::CommentArgs),
+    /// Edit an issue's title/body/kind/priority/state
+    Edit(edit::EditArgs),
+    /// Close an issue (state → resolved)
+    Close(edit::StateArgs),
+    /// Reopen an issue (state → open)
+    Reopen(edit::StateArgs),
 }
 
 /// Dispatch `bb issue <sub>`.
@@ -47,5 +54,8 @@ pub fn run(ctx: &Context, args: IssueArgs) -> anyhow::Result<()> {
         IssueCommands::View(a) => view::run(ctx, a),
         IssueCommands::Create(a) => create::run(ctx, a),
         IssueCommands::Comment(a) => comment::run(ctx, a),
+        IssueCommands::Edit(a) => edit::run(ctx, a),
+        IssueCommands::Close(a) => edit::run_close(ctx, a),
+        IssueCommands::Reopen(a) => edit::run_reopen(ctx, a),
     }
 }
