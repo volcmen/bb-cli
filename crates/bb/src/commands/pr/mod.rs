@@ -13,6 +13,7 @@ mod list;
 mod merge;
 mod render;
 mod review;
+mod status;
 mod view;
 
 use crate::core::Context;
@@ -50,6 +51,8 @@ enum PrCommands {
     Checks(checks::ChecksArgs),
     /// Add or list comments on a pull request
     Comment(comment::CommentArgs),
+    /// Show pull requests relevant to you (authored / review-requested)
+    Status(status::StatusArgs),
 }
 
 /// Dispatch `bb pr <sub>`.
@@ -70,5 +73,6 @@ pub fn run(ctx: &Context, args: PrArgs) -> anyhow::Result<()> {
         PrCommands::Checkout(a) => checkout::run(ctx, a),
         PrCommands::Checks(a) => checks::run(ctx, a),
         PrCommands::Comment(a) => comment::run(ctx, a),
+        PrCommands::Status(a) => status::run(ctx, a),
     }
 }
