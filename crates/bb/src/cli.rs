@@ -7,7 +7,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 use crate::commands::{
     api::ApiArgs, auth::AuthArgs, browse::BrowseArgs, completion::CompletionArgs,
     config::ConfigArgs, issue::IssueArgs, man::ManArgs, pipeline::PipelineArgs, pr::PrArgs,
-    repo::RepoArgs, ssh_key::SshKeyArgs,
+    repo::RepoArgs, search::SearchArgs, ssh_key::SshKeyArgs,
 };
 use crate::factory;
 
@@ -68,6 +68,8 @@ enum Commands {
     Config(ConfigArgs),
     /// Manage your account's SSH keys
     SshKey(SshKeyArgs),
+    /// Search repositories, code, and pull requests
+    Search(SearchArgs),
 }
 
 /// Parse process arguments (auto-exits on `--version`/`--help`/parse errors).
@@ -134,6 +136,10 @@ pub fn dispatch(cli: Cli) -> anyhow::Result<()> {
         Some(Commands::SshKey(args)) => {
             let ctx = factory::build_context(repo_override)?;
             crate::commands::ssh_key::run(&ctx, args)
+        }
+        Some(Commands::Search(args)) => {
+            let ctx = factory::build_context(repo_override)?;
+            crate::commands::search::run(&ctx, args)
         }
 
         None => {
