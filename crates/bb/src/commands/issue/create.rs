@@ -82,7 +82,13 @@ pub fn run(ctx: &Context, args: CreateArgs) -> anyhow::Result<()> {
     };
 
     let path = format!("/repositories/{}/{}/issues", repo.workspace(), repo.slug());
-    let issue: Issue = client.post(&path, &payload)?;
+    let issue: Issue = match client.post(&path, &payload) {
+        Ok(issue) => issue,
+        Err(e) if e.is_gone() || e.is_not_found() => {
+            return Err(super::tracker_disabled(&repo).into());
+        }
+        Err(e) => return Err(e.into()),
+    };
 
     ctx.io.println(&format!("✓ Created issue #{}", issue.id));
     if let Some(url) = issue.html_url() {
@@ -254,6 +260,33 @@ mod tests {
             serde_json::from_slice(post.body.as_deref().unwrap()).unwrap();
         assert_eq!(body["title"], "Typed title");
         assert_eq!(body["content"]["raw"], "");
+    }
+
+    #[test]
+    fn create_tracker_disabled_410_is_flag_error() {
+        // #77: posting to a disabled tracker returns 410 Gone.
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "create 410",
+            FakeTransport::rest(Method::Post, "/repositories/acme/widgets/issues"),
+            FakeTransport::json(410, r#"{"type":"error","error":{"message":"Gone"}}"#),
+        );
+        let (ctx, _bufs) = ctx_with(
+            h.clone(),
+            authed_config(),
+            Arc::new(ScriptedPrompter::new()),
+        );
+
+        let a = CreateArgs {
+            title: Some("T".to_owned()),
+            ..args()
+        };
+        let err = run(&ctx, a).unwrap_err();
+        assert!(err.downcast_ref::<FlagError>().is_some(), "got: {err}");
+        assert!(
+            err.to_string().contains("issue tracker is not enabled"),
+            "msg: {err}"
+        );
     }
 
     #[test]

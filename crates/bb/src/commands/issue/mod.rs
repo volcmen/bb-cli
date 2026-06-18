@@ -5,8 +5,19 @@ mod create;
 mod list;
 mod view;
 
-use crate::core::Context;
+use crate::core::{Context, FlagError, RepoId};
 use clap::{Args, Subcommand};
+
+/// A `FlagError` explaining that the repository's issue tracker is disabled.
+/// Bitbucket returns 404 or 410 (Gone) on `/issues` when the feature is off.
+pub(super) fn tracker_disabled(repo: &RepoId) -> FlagError {
+    FlagError::new(format!(
+        "issue tracker is not enabled for {}/{}\n\
+         enable it in the repository settings, or this repo may track issues elsewhere (e.g. Jira)",
+        repo.workspace(),
+        repo.slug()
+    ))
+}
 
 #[derive(Args, Debug)]
 pub struct IssueArgs {

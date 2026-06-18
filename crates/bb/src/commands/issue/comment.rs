@@ -65,7 +65,15 @@ pub fn run(ctx: &Context, args: CommentArgs) -> anyhow::Result<()> {
         repo.slug()
     );
     // Comment response shape is loose; we don't need any of its fields.
-    let _resp: serde_json::Value = client.post(&path, &payload)?;
+    let _resp: serde_json::Value = match client.post(&path, &payload) {
+        Ok(v) => v,
+        // 410 = tracker disabled; 404 = the issue itself is missing.
+        Err(e) if e.is_gone() => return Err(super::tracker_disabled(&repo).into()),
+        Err(e) if e.is_not_found() => {
+            return Err(FlagError::new(format!("issue #{id} not found")).into());
+        }
+        Err(e) => return Err(e.into()),
+    };
 
     ctx.io.println(&format!("✓ Commented on issue #{id}"));
     Ok(())
@@ -215,6 +223,34 @@ mod tests {
         let body: serde_json::Value =
             serde_json::from_slice(post.body.as_deref().unwrap()).unwrap();
         assert_eq!(body["content"]["raw"], "from editor");
+    }
+
+    #[test]
+    fn comment_tracker_disabled_410_is_flag_error() {
+        // #77: commenting on a disabled tracker returns 410 Gone.
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "comment 410",
+            FakeTransport::rest(Method::Post, "/repositories/acme/widgets/issues/7/comments"),
+            FakeTransport::json(410, r#"{"type":"error","error":{"message":"Gone"}}"#),
+        );
+        let (ctx, _bufs) = ctx_with(
+            h.clone(),
+            authed_config(),
+            Arc::new(ScriptedPrompter::new()),
+        );
+
+        let a = CommentArgs {
+            id: "7".to_owned(),
+            body: Some("hi".to_owned()),
+            body_file: None,
+        };
+        let err = run(&ctx, a).unwrap_err();
+        assert!(err.downcast_ref::<FlagError>().is_some(), "got: {err}");
+        assert!(
+            err.to_string().contains("issue tracker is not enabled"),
+            "msg: {err}"
+        );
     }
 
     #[test]

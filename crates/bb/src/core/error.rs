@@ -116,6 +116,13 @@ impl ApiError {
     pub fn is_not_found(&self) -> bool {
         self.status() == Some(404)
     }
+
+    /// `410 Gone` — Bitbucket returns this for a feature that is disabled on the
+    /// repository (e.g. the issue tracker).
+    #[must_use]
+    pub fn is_gone(&self) -> bool {
+        self.status() == Some(410)
+    }
 }
 
 /// Errors from the git integration layer.

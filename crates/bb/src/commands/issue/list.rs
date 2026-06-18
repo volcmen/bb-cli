@@ -2,7 +2,7 @@
 
 use crate::api::models::Issue;
 use crate::api::BitbucketClient;
-use crate::core::{AuthError, ColorScheme, Context, FlagError};
+use crate::core::{AuthError, ColorScheme, Context};
 use clap::Args;
 
 use crate::auth;
@@ -29,9 +29,9 @@ pub struct ListArgs {
 ///
 /// # Errors
 /// Returns [`AuthError`] (exit 4) if not authenticated for the repo's host,
-/// [`FlagError`] (exit 1) if the repo's issue tracker is disabled (the API
-/// returns 404 on `/issues`), and propagates [`ApiError`](crate::core::ApiError)
-/// from the listing call.
+/// [`FlagError`](crate::core::FlagError) (exit 1) if the repo's issue tracker is
+/// disabled (the API returns 410 Gone, or 404, on `/issues`), and propagates
+/// [`ApiError`](crate::core::ApiError) from the listing call.
 pub fn run(ctx: &Context, args: ListArgs) -> anyhow::Result<()> {
     let repo = ctx.base_repo()?;
     let host = repo.host().to_owned();
@@ -57,15 +57,10 @@ pub fn run(ctx: &Context, args: ListArgs) -> anyhow::Result<()> {
 
     let issues: Vec<Issue> = match client.paginate(&path, Some(args.limit)) {
         Ok(issues) => issues,
-        // The tracker being disabled looks like a 404 on `/issues`; turn it into
-        // a usage error rather than a raw "not found".
-        Err(e) if e.is_not_found() => {
-            return Err(FlagError::new(format!(
-                "issue tracker is not enabled for {}/{}",
-                repo.workspace(),
-                repo.slug()
-            ))
-            .into());
+        // A disabled tracker returns 410 (Gone) — or sometimes 404 — on
+        // `/issues`; turn either into a clear usage error.
+        Err(e) if e.is_gone() || e.is_not_found() => {
+            return Err(super::tracker_disabled(&repo).into());
         }
         Err(e) => return Err(e.into()),
     };
@@ -180,7 +175,7 @@ mod tests {
 
     use crate::api::testing::FakeTransport;
     use crate::config::FileConfig;
-    use crate::core::{ConfigProvider, GitClient, Method, RepoId, Transport};
+    use crate::core::{ConfigProvider, FlagError, GitClient, Method, RepoId, Transport};
     use crate::git::{ShellGit, StubRunner};
 
     use super::*;
@@ -375,6 +370,29 @@ mod tests {
         let err = run(&ctx, list_args()).unwrap_err();
         let flag = err.downcast_ref::<FlagError>();
         assert!(flag.is_some(), "expected FlagError, got: {err}");
+        assert!(
+            err.to_string()
+                .contains("issue tracker is not enabled for acme/widgets"),
+            "msg: {err}"
+        );
+    }
+
+    #[test]
+    fn list_tracker_disabled_410_is_flag_error() {
+        // #77: Bitbucket actually returns 410 Gone (not 404) for a disabled tracker.
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "list 410",
+            FakeTransport::rest(Method::Get, "/issues"),
+            FakeTransport::json(410, r#"{"type":"error","error":{"message":"Gone"}}"#),
+        );
+        let transport: Arc<dyn Transport> = h.clone();
+        let prompter = Arc::new(ScriptedPrompter::new());
+        let (mut ctx, _bufs) = test_context(transport, git(), config(), prompter, false);
+        ctx.repo_override = Some(RepoId::new("acme", "widgets"));
+
+        let err = run(&ctx, list_args()).unwrap_err();
+        assert!(err.downcast_ref::<FlagError>().is_some(), "got: {err}");
         assert!(
             err.to_string()
                 .contains("issue tracker is not enabled for acme/widgets"),
