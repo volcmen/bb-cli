@@ -20,6 +20,30 @@ pub fn map_key(key: KeyEvent, ctx: InputContext) -> Option<Msg> {
     }
 }
 
+/// The normal-context bindings as `(keys, description)` for the `?` help overlay,
+/// kept beside [`normal_key`] so the two never drift.
+#[must_use]
+pub fn help_bindings() -> &'static [(&'static str, &'static str)] {
+    &[
+        ("j / k", "move down / up"),
+        ("g / G", "top / bottom"),
+        ("Ctrl-d / Ctrl-u", "half page"),
+        ("1 / 2 / 3", "Pull Requests / Issues / Pipelines"),
+        ("Tab / Shift-Tab", "next / previous section"),
+        ("Enter / l", "open detail"),
+        ("/", "fuzzy filter"),
+        ("r", "refresh"),
+        ("o", "open in browser"),
+        ("a", "approve / un-approve (PR)"),
+        ("m", "merge (PR)"),
+        ("x", "decline (PR)"),
+        ("C", "comment (PR)"),
+        ("?", "toggle this help"),
+        ("Esc", "back / clear"),
+        ("q", "quit"),
+    ]
+}
+
 /// In the fuzzy-filter input: type to narrow, Enter applies, Esc clears.
 fn filter_key(key: KeyEvent) -> Option<Msg> {
     match key.code {

@@ -14,6 +14,7 @@ use std::collections::HashSet;
 use crate::api::models::{CommitStatus, Issue, Pipeline, PipelineStep, PullRequest, User};
 use crate::render::sanitize;
 
+use super::config::Theme;
 use super::worker::{RequestKind, Response};
 
 /// State backing the PR detail pane.
@@ -183,6 +184,8 @@ pub struct App {
     detail: Option<Detail>,
     /// PR ids you've approved this session (drives the `a` toggle optimistically).
     my_approved: HashSet<u64>,
+    /// State colors (from config; defaults otherwise).
+    pub theme: Theme,
     spinner: usize,
 }
 
@@ -212,8 +215,17 @@ impl App {
             detail_open: false,
             detail: None,
             my_approved: HashSet::new(),
+            theme: Theme::default(),
             spinner: 0,
         }
+    }
+
+    /// A PR/CI state rendered as a span colored by the active theme.
+    fn state_span(&self, state: &str) -> Span<'static> {
+        Span::styled(
+            state.to_owned(),
+            Style::default().fg(self.theme.state(state)),
+        )
     }
 
     /// The PR an action (approve/merge/decline/comment) targets — only on the PR
@@ -833,8 +845,8 @@ impl App {
             let created = p.created_on.as_deref().unwrap_or_default();
             Row::new([
                 Cell::from(build),
-                Cell::from(state_cell(p.state_name())),
-                Cell::from(state_cell(p.result_name())),
+                Cell::from(self.state_span(p.state_name())),
+                Cell::from(self.state_span(p.result_name())),
                 Cell::from(sanitize(ref_name)),
                 Cell::from(created.get(0..10).unwrap_or(created).to_owned()),
             ])
@@ -931,7 +943,7 @@ impl App {
         let mut lines: Vec<Line> = Vec::new();
         lines.push(Line::from(vec![
             Span::raw("State: "),
-            state_cell(d.pr.state.as_deref().unwrap_or_default()),
+            self.state_span(d.pr.state.as_deref().unwrap_or_default()),
         ]));
         if let Some(author) = &d.pr.author {
             lines.push(Line::raw(format!("Author: {}", author.label())));
@@ -969,7 +981,7 @@ impl App {
                 let name = c.name.as_deref().or(c.key.as_deref()).unwrap_or("check");
                 lines.push(Line::from(vec![
                     Span::raw(format!("  {name}  ")),
-                    state_cell(c.state.as_deref().unwrap_or_default()),
+                    self.state_span(c.state.as_deref().unwrap_or_default()),
                 ]));
             }
         }
@@ -995,9 +1007,9 @@ impl App {
             .map_or_else(|| "?".to_owned(), |n| format!("#{n}"));
         let mut lines: Vec<Line> = vec![Line::from(vec![
             Span::raw("State: "),
-            state_cell(p.state_name()),
+            self.state_span(p.state_name()),
             Span::raw("  "),
-            state_cell(p.result_name()),
+            self.state_span(p.result_name()),
         ])];
         if let Some(ref_name) = p.target.as_ref().and_then(|t| t.ref_name.as_deref()) {
             lines.push(Line::raw(format!("Ref: {}", sanitize(ref_name))));
@@ -1016,7 +1028,7 @@ impl App {
                     .unwrap_or_default();
                 lines.push(Line::from(vec![
                     Span::raw(format!("  {name}  ")),
-                    state_cell(state),
+                    self.state_span(state),
                 ]));
             }
         }
@@ -1048,7 +1060,7 @@ impl App {
         let mut lines: Vec<Line> = vec![
             Line::from(vec![
                 Span::raw("State: "),
-                state_cell(i.state.as_deref().unwrap_or_default()),
+                self.state_span(i.state.as_deref().unwrap_or_default()),
             ]),
             Line::raw(format!(
                 "Kind: {}    Priority: {}",
@@ -1093,7 +1105,7 @@ impl App {
                 Cell::from(format!("#{}", pr.id)),
                 Cell::from(sanitize(pr.title.as_deref().unwrap_or_default())),
                 Cell::from(sanitize(pr.source.branch_name())),
-                Cell::from(state_cell(pr.state.as_deref().unwrap_or_default())),
+                Cell::from(self.state_span(pr.state.as_deref().unwrap_or_default())),
             ])
         });
         let widths = [
@@ -1113,19 +1125,17 @@ impl App {
     }
 
     fn render_help(&self, frame: &mut Frame) {
-        let area = centered(frame.area(), 60, 40);
-        let help = Paragraph::new(vec![
-            Line::from("Keys"),
-            Line::from("  j / k        move down / up"),
-            Line::from("  g / G        top / bottom"),
-            Line::from("  Ctrl-d / -u  half page"),
-            Line::from("  1 / 2 / 3    sections"),
-            Line::from("  Tab          next section"),
-            Line::from("  ?            toggle this help"),
-            Line::from("  Esc          back / quit"),
-            Line::from("  q            quit"),
-        ])
-        .block(Block::default().borders(Borders::ALL).title("Help"));
+        let area = centered(frame.area(), 60, 60);
+        // Generated from the keymap so it never drifts from the real bindings.
+        let mut lines = vec![Line::from(Span::styled(
+            "Keys",
+            Style::default().add_modifier(Modifier::BOLD),
+        ))];
+        for (keys, desc) in super::keymap::help_bindings() {
+            lines.push(Line::from(format!("  {keys:<16} {desc}")));
+        }
+        let help =
+            Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title("Help"));
         frame.render_widget(Clear, area);
         frame.render_widget(help, area);
     }
@@ -1178,18 +1188,6 @@ fn pipeline_haystack(p: &Pipeline) -> String {
             .and_then(|t| t.ref_name.as_deref())
             .unwrap_or(""),
     )
-}
-
-/// A PR/CI state rendered as a colored span.
-fn state_cell(state: &str) -> Span<'static> {
-    let color = match state {
-        "OPEN" | "SUCCESSFUL" => Color::Green,
-        "MERGED" => Color::Cyan,
-        "INPROGRESS" => Color::Yellow,
-        "DECLINED" | "SUPERSEDED" | "FAILED" | "STOPPED" => Color::Red,
-        _ => Color::Gray,
-    };
-    Span::styled(state.to_owned(), Style::default().fg(color))
 }
 
 /// Render a centered modal box (`Clear`ed background) with a title and body.
@@ -1693,6 +1691,28 @@ mod tests {
         let app = App::new(false);
         terminal.draw(|f| app.view(f)).unwrap();
         assert!(buffer_text(terminal.backend()).contains("Not logged in"));
+    }
+
+    #[test]
+    fn theme_colors_the_state_span() {
+        let mut app = App::new(true);
+        app.theme.open = Color::Blue;
+        assert_eq!(app.state_span("OPEN").style.fg, Some(Color::Blue));
+        // An unknown state uses the theme's "other" color.
+        assert_eq!(app.state_span("WAT").style.fg, Some(app.theme.other));
+    }
+
+    #[test]
+    fn help_overlay_is_generated_from_keymap() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(true);
+        app.update(Msg::ToggleHelp);
+        terminal.draw(|f| app.view(f)).unwrap();
+        let text = buffer_text(terminal.backend());
+        // Descriptions come straight from keymap::help_bindings().
+        assert!(text.contains("fuzzy filter"), "buffer: {text}");
+        assert!(text.contains("merge"), "buffer: {text}");
     }
 
     #[test]
