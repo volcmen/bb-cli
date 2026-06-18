@@ -1,6 +1,7 @@
 //! `bb repo` — repository commands.
 
 mod clone;
+mod create;
 mod list;
 mod view;
 
@@ -17,6 +18,8 @@ pub struct RepoArgs {
 enum RepoCommands {
     /// View a repository
     View(view::ViewArgs),
+    /// Create a repository
+    Create(create::CreateArgs),
     /// Clone a repository
     Clone(clone::CloneArgs),
     /// List repositories in a workspace
@@ -30,6 +33,7 @@ enum RepoCommands {
 pub fn run(ctx: &Context, args: RepoArgs) -> anyhow::Result<()> {
     match args.command {
         RepoCommands::View(a) => view::run(ctx, a),
+        RepoCommands::Create(a) => create::run(ctx, a),
         RepoCommands::Clone(a) => clone::run(ctx, a),
         RepoCommands::List(a) => list::run(ctx, a),
     }
