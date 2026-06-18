@@ -295,6 +295,33 @@ mod tests {
     }
 
     #[test]
+    fn list_jq_without_json_filters_instead_of_table() {
+        // Regression for #76: `--jq` alone must imply JSON, not print the table.
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "list jq only",
+            FakeTransport::rest(Method::Get, "/pullrequests"),
+            FakeTransport::json(200, TWO_PRS),
+        );
+        let transport: Arc<dyn Transport> = h.clone();
+        let prompter = Arc::new(ScriptedPrompter::new());
+        let (ctx, bufs) = test_context(transport, git(), config(), prompter, false);
+
+        let a = ListArgs {
+            json: crate::output::JsonFlags {
+                json: vec![],
+                jq: Some(".[].id".to_owned()),
+                template: None,
+            },
+            ..list_args()
+        };
+        run(&ctx, a).unwrap();
+
+        let out = bufs.stdout_string();
+        assert_eq!(out, "7\n9\n", "expected jq-filtered ids, got: {out:?}");
+    }
+
+    #[test]
     fn list_json_empty_is_empty_array() {
         let h = Arc::new(FakeTransport::new());
         h.stub(
