@@ -14,13 +14,14 @@ mod worker;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ratatui::crossterm::event::{self, Event, KeyEventKind};
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 
 use crate::commands::issue::query::IssueFilter;
 use crate::commands::pr::query::PrFilter;
 use crate::core::{Browser, RepoId, Transport};
 
-use app::{App, Msg, PendingAction, Tab};
+use app::{App, InputContext, Msg, PendingAction, Tab};
+use config::{expand_template, CustomKey};
 use worker::{Request, RequestKind, Worker};
 
 /// How often the loop wakes to advance the spinner when no input arrives.
@@ -69,6 +70,10 @@ pub fn run(
         .unwrap_or(40)
         .max(1);
 
+    // Kept for custom-key template vars ({{repo}}/{{workspace}}/{{slug}}).
+    let repo_for_vars = repo.clone();
+    let custom_keys = dash_config.custom_keys.clone();
+
     let worker = match (authed, repo) {
         (true, Some(repo)) => {
             let worker = Worker::spawn(transport, header, repo);
@@ -90,7 +95,17 @@ pub fn run(
         if event::poll(TICK)? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
-                    if let Some(msg) = keymap::map_key(key, app.input_context()) {
+                    // A custom keybinding (free key, normal context) suspends the
+                    // TUI, runs its command, and resumes — checked before the keymap.
+                    let custom = match (app.input_context(), key.code) {
+                        (InputContext::Normal, KeyCode::Char(c)) => custom_keys
+                            .iter()
+                            .find(|k| k.key == c && k.applies(app.active_tab)),
+                        _ => None,
+                    };
+                    if let Some(ck) = custom {
+                        run_custom_key(&mut guard, &mut app, ck, repo_for_vars.as_ref())?;
+                    } else if let Some(msg) = keymap::map_key(key, app.input_context()) {
                         dispatch(
                             &mut app,
                             worker.as_ref(),
@@ -254,4 +269,80 @@ fn dispatch(
         }
         other => app.update(other),
     }
+}
+
+/// Run a custom keybinding: suspend the TUI, run its templated command via the
+/// shell, then resume — restoring the terminal even if the command fails. The
+/// outcome is reported on the status line; no selection → a no-op hint.
+fn run_custom_key(
+    guard: &mut terminal::TerminalGuard,
+    app: &mut App,
+    ck: &CustomKey,
+    repo: Option<&RepoId>,
+) -> anyhow::Result<()> {
+    app.status = None;
+    let Some(vars) = row_vars(app, repo) else {
+        app.status = Some(format!("{}: no selection", ck.name));
+        return Ok(());
+    };
+    let command = expand_template(&ck.command, &vars);
+
+    guard.suspend()?;
+    let result = run_shell(&command);
+    guard.resume()?;
+
+    app.status = Some(match result {
+        Ok(status) if status.success() => format!("✓ {}", ck.name),
+        Ok(status) => format!("{} exited with {}", ck.name, status.code().unwrap_or(-1)),
+        Err(e) => format!("{}: {e}", ck.name),
+    });
+    Ok(())
+}
+
+/// Template vars for the active section's selected row (`None` when nothing is
+/// selected, so the binding becomes a no-op).
+fn row_vars(app: &App, repo: Option<&RepoId>) -> Option<Vec<(&'static str, String)>> {
+    let mut vars = Vec::new();
+    if let Some(r) = repo {
+        vars.push(("repo", r.full_name()));
+        vars.push(("workspace", r.workspace().to_owned()));
+        vars.push(("slug", r.slug().to_owned()));
+    }
+    match app.active_tab {
+        Tab::PullRequests => {
+            let pr = app.active_pr()?;
+            vars.push(("id", pr.id.to_string()));
+            vars.push(("url", pr.html_url().unwrap_or_default().to_owned()));
+            vars.push(("branch", pr.source.branch_name().to_owned()));
+        }
+        Tab::Issues => {
+            let issue = app.active_issue()?;
+            vars.push(("id", issue.id.to_string()));
+            vars.push(("url", issue.html_url().unwrap_or_default().to_owned()));
+        }
+        Tab::Pipelines => {
+            let p = app.active_pipeline()?;
+            if let Some(n) = p.build_number {
+                vars.push(("id", n.to_string()));
+            }
+        }
+    }
+    Some(vars)
+}
+
+/// Run `command` through the platform shell, returning its exit status.
+fn run_shell(command: &str) -> std::io::Result<std::process::ExitStatus> {
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = std::process::Command::new("cmd");
+        c.arg("/C");
+        c
+    };
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let mut c = std::process::Command::new("sh");
+        c.arg("-c");
+        c
+    };
+    cmd.arg(command).status()
 }
