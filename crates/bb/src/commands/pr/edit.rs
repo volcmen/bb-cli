@@ -21,6 +21,12 @@ pub struct EditArgs {
     /// New base (destination) branch
     #[arg(long, short = 'B')]
     pub base: Option<String>,
+    /// Add a reviewer (username/nickname/account id/uuid; repeatable, comma-ok)
+    #[arg(long = "add-reviewer", value_delimiter = ',')]
+    pub add_reviewer: Vec<String>,
+    /// Remove a reviewer (matched on the PR's current reviewers; repeatable)
+    #[arg(long = "remove-reviewer", value_delimiter = ',')]
+    pub remove_reviewer: Vec<String>,
 }
 
 // ----- request body shapes ----------------------------------------------
@@ -37,11 +43,15 @@ struct Endpoint<'a> {
 
 /// The JSON body sent to `PUT .../pullrequests/{id}`. Bitbucket replaces the PR
 /// object, so we always send the (possibly unchanged) title/description/base.
+/// `reviewers` is sent only when a `--add-reviewer`/`--remove-reviewer` was
+/// requested; otherwise it is omitted so the existing reviewer set is preserved.
 #[derive(serde::Serialize)]
 struct EditPrBody<'a> {
     title: &'a str,
     description: &'a str,
     destination: Endpoint<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reviewers: Option<Vec<super::create::Reviewer>>,
 }
 
 /// Run `bb pr edit`.
@@ -64,9 +74,12 @@ pub fn run(ctx: &Context, args: EditArgs) -> anyhow::Result<()> {
         && args.body.is_none()
         && args.body_file.is_none()
         && args.base.is_none()
+        && args.add_reviewer.is_empty()
+        && args.remove_reviewer.is_empty()
     {
         return Err(FlagError::new(
-            "nothing to update; pass --title, --body/--body-file, or --base",
+            "nothing to update; pass --title, --body/--body-file, --base, \
+             --add-reviewer, or --remove-reviewer",
         )
         .into());
     }
@@ -113,12 +126,15 @@ pub fn run(ctx: &Context, args: EditArgs) -> anyhow::Result<()> {
         .or_else(|| current.destination.branch.as_ref().map(|b| b.name.as_str()))
         .unwrap_or_default();
 
+    let reviewers = resolve_reviewer_edits(&client, &repo, &args, &current)?;
+
     let payload = EditPrBody {
         title,
         description,
         destination: Endpoint {
             branch: BranchName { name: base },
         },
+        reviewers,
     };
     let updated: PullRequest = client.put(&path, &payload)?;
 
@@ -135,6 +151,55 @@ pub fn run(ctx: &Context, args: EditArgs) -> anyhow::Result<()> {
     ctx.io.println(&format!("✓ Updated pull request #{id}"));
     ctx.io.println(&url);
     Ok(())
+}
+
+/// Build the merged reviewer set when `--add-reviewer`/`--remove-reviewer` were
+/// passed, else `None` (so `reviewers` is omitted from the PUT and the current set
+/// is preserved).
+///
+/// Removals are matched against the PR's *current* reviewer objects (so a member
+/// who left the workspace can still be removed). Additions are resolved against the
+/// workspace member list (only fetched when there is something to add). Remove is
+/// applied before add, so re-adding a just-removed reviewer keeps them.
+///
+/// # Errors
+/// Returns [`FlagError`] when an `--add-reviewer` cannot be resolved to a member.
+fn resolve_reviewer_edits(
+    client: &BitbucketClient,
+    repo: &crate::core::RepoId,
+    args: &EditArgs,
+    current: &PullRequest,
+) -> anyhow::Result<Option<Vec<super::create::Reviewer>>> {
+    if args.add_reviewer.is_empty() && args.remove_reviewer.is_empty() {
+        return Ok(None);
+    }
+
+    // Current reviewers, minus any matched by --remove-reviewer.
+    let mut uuids: Vec<String> = current
+        .reviewers
+        .iter()
+        .filter(|u| {
+            !args
+                .remove_reviewer
+                .iter()
+                .any(|want| super::create::member_matches(u, want))
+        })
+        .filter_map(|u| u.uuid.clone())
+        .collect();
+
+    // Resolve additions to UUIDs and append, deduping by uuid.
+    for reviewer in super::create::resolve_reviewers(client, repo, &args.add_reviewer)? {
+        if !uuids.contains(&reviewer.uuid) {
+            uuids.push(reviewer.uuid);
+        }
+    }
+
+    Ok(Some(
+        uuids
+            .into_iter()
+            .map(|uuid| super::create::Reviewer { uuid })
+            .collect(),
+    ))
 }
 
 /// Resolve the new description from `--body`, then `--body-file` (`-` => stdin),
@@ -222,6 +287,8 @@ mod tests {
             body: None,
             body_file: None,
             base: None,
+            add_reviewer: Vec::new(),
+            remove_reviewer: Vec::new(),
         }
     }
 
@@ -343,5 +410,138 @@ mod tests {
         };
         let err = run(&ctx, a).unwrap_err();
         assert!(err.downcast_ref::<AuthError>().is_some(), "got: {err}");
+    }
+
+    // ----- reviewer editing (#117) ---------------------------------------
+
+    fn stub_get_body(h: &Arc<FakeTransport>, body: &'static str) {
+        h.stub(
+            "get pr 42",
+            FakeTransport::rest(Method::Get, "/pullrequests/42"),
+            FakeTransport::json(200, body),
+        );
+    }
+
+    fn stub_members(h: &Arc<FakeTransport>) {
+        h.stub(
+            "list members",
+            FakeTransport::rest(Method::Get, "/workspaces/acme/members"),
+            FakeTransport::json(
+                200,
+                r#"{"values": [
+                    {"user": {"nickname": "alice", "uuid": "{a}"}},
+                    {"user": {"nickname": "bob", "uuid": "{b}"}}
+                ]}"#,
+            ),
+        );
+    }
+
+    const PR_ONE_REVIEWER: &str = r#"{
+        "id": 42, "title": "T", "description": "d",
+        "destination": {"branch": {"name": "main"}},
+        "reviewers": [{"nickname": "alice", "uuid": "{a}"}]
+    }"#;
+
+    const PR_TWO_REVIEWERS: &str = r#"{
+        "id": 42, "title": "T", "description": "d",
+        "destination": {"branch": {"name": "main"}},
+        "reviewers": [
+            {"nickname": "alice", "uuid": "{a}"},
+            {"nickname": "bob", "uuid": "{b}"}
+        ]
+    }"#;
+
+    fn reviewer_uuids(h: &FakeTransport) -> Vec<String> {
+        let body = put_body(h);
+        body["reviewers"]
+            .as_array()
+            .expect("reviewers array in PUT body")
+            .iter()
+            .map(|r| r["uuid"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn edit_add_reviewer_merges_into_current() {
+        let h = Arc::new(FakeTransport::new());
+        stub_get_body(&h, PR_ONE_REVIEWER);
+        stub_members(&h);
+        stub_put(&h);
+        let (ctx, _bufs) = ctx_with(h.clone());
+
+        let a = EditArgs {
+            add_reviewer: vec!["bob".to_owned()],
+            ..args()
+        };
+        run(&ctx, a).unwrap();
+
+        assert_eq!(reviewer_uuids(&h), vec!["{a}", "{b}"]);
+    }
+
+    #[test]
+    fn edit_remove_reviewer_drops_from_current() {
+        let h = Arc::new(FakeTransport::new());
+        // No members fetch: removal matches the PR's own reviewer objects.
+        stub_get_body(&h, PR_TWO_REVIEWERS);
+        stub_put(&h);
+        let (ctx, _bufs) = ctx_with(h.clone());
+
+        let a = EditArgs {
+            remove_reviewer: vec!["alice".to_owned()],
+            ..args()
+        };
+        run(&ctx, a).unwrap();
+
+        assert_eq!(reviewer_uuids(&h), vec!["{b}"]);
+    }
+
+    #[test]
+    fn edit_add_and_remove_compose() {
+        let h = Arc::new(FakeTransport::new());
+        stub_get_body(&h, PR_ONE_REVIEWER);
+        stub_members(&h);
+        stub_put(&h);
+        let (ctx, _bufs) = ctx_with(h.clone());
+
+        let a = EditArgs {
+            add_reviewer: vec!["bob".to_owned()],
+            remove_reviewer: vec!["alice".to_owned()],
+            ..args()
+        };
+        run(&ctx, a).unwrap();
+
+        assert_eq!(reviewer_uuids(&h), vec!["{b}"]);
+    }
+
+    #[test]
+    fn edit_add_unknown_reviewer_is_flag_error() {
+        let h = Arc::new(FakeTransport::new());
+        // GET + members are hit; the PUT is never reached, so it is not stubbed.
+        stub_get_body(&h, PR_ONE_REVIEWER);
+        stub_members(&h);
+        let (ctx, _bufs) = ctx_with(h.clone());
+
+        let a = EditArgs {
+            add_reviewer: vec!["carol".to_owned()],
+            ..args()
+        };
+        let err = run(&ctx, a).unwrap_err();
+        assert!(err.downcast_ref::<FlagError>().is_some(), "got: {err}");
+    }
+
+    #[test]
+    fn edit_reviewer_flag_satisfies_change_guard() {
+        // Only --remove-reviewer (no title/body/base) still reaches the network.
+        let h = Arc::new(FakeTransport::new());
+        stub_get_body(&h, PR_TWO_REVIEWERS);
+        stub_put(&h);
+        let (ctx, _bufs) = ctx_with(h.clone());
+
+        let a = EditArgs {
+            remove_reviewer: vec!["bob".to_owned()],
+            ..args()
+        };
+        run(&ctx, a).unwrap();
+        assert_eq!(reviewer_uuids(&h), vec!["{a}"]);
     }
 }
