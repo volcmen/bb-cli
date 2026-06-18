@@ -21,7 +21,13 @@ pub fn run(ctx: &Context, _args: DashArgs) -> anyhow::Result<()> {
     let authed = header.is_some();
     // The repo is best-effort: dash still opens (with a hint) when none resolves.
     let repo = ctx.base_repo().ok();
-    crate::tui::run(authed, repo, ctx.transport.clone(), header)
+    crate::tui::run(
+        authed,
+        repo,
+        ctx.transport.clone(),
+        header,
+        ctx.browser.clone(),
+    )
 }
 
 #[cfg(test)]

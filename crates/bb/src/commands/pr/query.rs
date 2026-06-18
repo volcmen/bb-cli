@@ -51,6 +51,14 @@ pub fn list(
     client.paginate(&filter.path(repo), Some(filter.limit))
 }
 
+/// Fetch a single pull request by id.
+///
+/// # Errors
+/// An error if the PR is not found or the API call fails.
+pub fn get(client: &BitbucketClient, repo: &RepoId, id: u64) -> anyhow::Result<PullRequest> {
+    super::finder::find_by_id(client, repo, id)
+}
+
 /// Fetch the commit build statuses ("checks") for a commit `sha`.
 ///
 /// # Errors

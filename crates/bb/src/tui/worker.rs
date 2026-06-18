@@ -9,7 +9,7 @@
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 
-use crate::api::models::PullRequest;
+use crate::api::models::{CommitStatus, PullRequest};
 use crate::api::BitbucketClient;
 use crate::commands::pr::query::{self, PrFilter};
 use crate::core::{RepoId, Transport};
@@ -20,6 +20,7 @@ use std::sync::Arc;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequestKind {
     Prs,
+    PrDetail,
 }
 
 /// A unit of work for the worker thread.
@@ -27,12 +28,19 @@ pub enum RequestKind {
 pub enum Request {
     /// Fetch the pull-request list for a filter.
     Prs(PrFilter),
+    /// Fetch one PR plus its CI checks (the detail pane).
+    PrDetail(u64),
 }
 
 /// A result delivered back to the UI thread.
 #[derive(Debug)]
 pub enum Response {
     Prs(Vec<PullRequest>),
+    /// A full PR plus its CI checks (fetched together so the pane renders at once).
+    PrDetail {
+        pr: Box<PullRequest>,
+        checks: Vec<CommitStatus>,
+    },
     /// A human-facing error message + the request kind it belongs to.
     Error(String, RequestKind),
 }
@@ -95,6 +103,22 @@ fn handle_request(client: &BitbucketClient, repo: &RepoId, request: Request) -> 
             Ok(prs) => Response::Prs(prs),
             Err(e) => Response::Error(format!("{e}"), RequestKind::Prs),
         },
+        Request::PrDetail(id) => match query::get(client, repo, id) {
+            Ok(pr) => {
+                // Fetch checks for the head commit when known; a checks failure is
+                // non-fatal (the pane still shows the PR, just no CI rows).
+                let checks = pr
+                    .source
+                    .commit_hash()
+                    .map(|sha| query::checks(client, repo, sha).unwrap_or_default())
+                    .unwrap_or_default();
+                Response::PrDetail {
+                    pr: Box::new(pr),
+                    checks,
+                }
+            }
+            Err(e) => Response::Error(format!("{e}"), RequestKind::PrDetail),
+        },
     }
 }
 
@@ -131,6 +155,35 @@ mod tests {
                 assert_eq!(prs[0].id, 7);
             }
             other => panic!("expected Prs, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn request_pr_detail_fetches_pr_and_checks() {
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "get pr",
+            FakeTransport::rest(Method::Get, "/pullrequests/42"),
+            FakeTransport::json(
+                200,
+                r#"{"id":42,"title":"T","state":"OPEN","source":{"commit":{"hash":"abc"}}}"#,
+            ),
+        );
+        h.stub(
+            "checks",
+            FakeTransport::rest(Method::Get, "/commit/abc/statuses"),
+            FakeTransport::json(200, r#"{"values":[{"key":"build","state":"SUCCESSFUL"}]}"#),
+        );
+        let transport: Arc<dyn Transport> = h;
+        let worker = Worker::spawn(transport, None, RepoId::new("acme", "widgets"));
+
+        worker.send(Request::PrDetail(42));
+        match worker.rx.recv().unwrap() {
+            Response::PrDetail { pr, checks } => {
+                assert_eq!(pr.id, 42);
+                assert_eq!(checks.len(), 1);
+            }
+            other => panic!("expected PrDetail, got {other:?}"),
         }
     }
 

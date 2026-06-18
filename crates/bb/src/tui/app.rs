@@ -6,12 +6,22 @@
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::api::models::PullRequest;
+use crate::api::models::{CommitStatus, PullRequest};
+use crate::render::sanitize;
 
 use super::worker::{RequestKind, Response};
+
+/// State backing the PR detail pane.
+#[derive(Debug, Clone)]
+struct Detail {
+    pr: PullRequest,
+    checks: Vec<CommitStatus>,
+    scroll: u16,
+    max_scroll: u16,
+}
 
 /// Spinner frames advanced by [`Msg::Tick`] while a request is in flight.
 const SPINNER: [char; 4] = ['|', '/', '-', '\\'];
@@ -62,6 +72,10 @@ pub enum Msg {
     Bottom,
     HalfPageDown,
     HalfPageUp,
+    /// Open the detail pane for the selected row (Enter / `l`).
+    Open,
+    /// Open the current PR in the browser (`o`) — acted on by the event loop.
+    OpenBrowser,
     /// Re-fetch the active section (handled by the event loop, which owns the worker).
     Refresh,
     /// Timer tick — advances the spinner (and later drives auto-refresh).
@@ -88,6 +102,9 @@ pub struct App {
     pub loading: Vec<RequestKind>,
     /// Transient status/error toast.
     pub status: Option<String>,
+    /// Whether the detail pane is open over the list.
+    pub detail_open: bool,
+    detail: Option<Detail>,
     spinner: usize,
 }
 
@@ -103,6 +120,8 @@ impl App {
             selected: 0,
             loading: Vec::new(),
             status: None,
+            detail_open: false,
+            detail: None,
             spinner: 0,
         }
     }
@@ -114,6 +133,36 @@ impl App {
         }
         let max = self.prs.len() as isize - 1;
         self.selected = (self.selected as isize).saturating_add(delta).clamp(0, max) as usize;
+    }
+
+    /// Scroll the detail body by `delta` lines, clamped to its content.
+    fn scroll_detail(&mut self, delta: isize) {
+        if let Some(d) = &mut self.detail {
+            let max = i32::from(d.max_scroll);
+            d.scroll = i32::from(d.scroll)
+                .saturating_add(delta as i32)
+                .clamp(0, max) as u16;
+        }
+    }
+
+    /// The id of the highlighted PR, if the PR section is active and non-empty.
+    #[must_use]
+    pub fn selected_pr_id(&self) -> Option<u64> {
+        if self.active_tab == Tab::PullRequests {
+            self.prs.get(self.selected).map(|p| p.id)
+        } else {
+            None
+        }
+    }
+
+    /// The web URL to open for `o`: the detail PR if open, else the selected row.
+    #[must_use]
+    pub fn current_url(&self) -> Option<&str> {
+        if let Some(d) = &self.detail {
+            d.pr.html_url()
+        } else {
+            self.prs.get(self.selected).and_then(PullRequest::html_url)
+        }
     }
 
     /// Mark a request kind as in flight (UI sent a [`Request`](super::worker::Request)).
@@ -140,6 +189,22 @@ impl App {
                     .min(self.prs.len().saturating_sub(1));
                 self.done(RequestKind::Prs);
             }
+            Response::PrDetail { pr, checks } => {
+                if self.detail_open {
+                    // Approximate scroll bound by the description's line count; the
+                    // paragraph wraps, so this is a floor that still lets long
+                    // bodies scroll (a real viewport bound can refine it later).
+                    let max_scroll =
+                        u16::try_from(pr.body().unwrap_or("").lines().count()).unwrap_or(u16::MAX);
+                    self.detail = Some(Detail {
+                        pr: *pr,
+                        checks,
+                        scroll: 0,
+                        max_scroll,
+                    });
+                }
+                self.done(RequestKind::PrDetail);
+            }
             Response::Error(message, kind) => {
                 self.done(kind);
                 self.status = Some(message);
@@ -158,10 +223,25 @@ impl App {
         match msg {
             Msg::Quit => self.should_quit = true,
             Msg::Pop => {
-                if self.modal.take().is_none() {
+                // Precedence: a modal closes first, then the detail pane, then quit.
+                if self.modal.take().is_some() {
+                } else if self.detail_open {
+                    self.detail_open = false;
+                    self.detail = None;
+                    self.done(RequestKind::PrDetail);
+                } else {
                     self.should_quit = true;
                 }
             }
+            Msg::Open => {
+                if self.active_tab == Tab::PullRequests && !self.prs.is_empty() {
+                    self.detail_open = true;
+                    self.detail = None;
+                    self.begin(RequestKind::PrDetail);
+                }
+            }
+            // The event loop opens the browser (it owns the Browser seam).
+            Msg::OpenBrowser => {}
             Msg::ToggleHelp => {
                 self.modal = match self.modal {
                     Some(Modal::Help) => None,
@@ -187,6 +267,21 @@ impl App {
                     self.spinner = (self.spinner + 1) % SPINNER.len();
                 }
             }
+            // Motions scroll the detail body when it's open, else move the list.
+            Msg::Down if self.detail_open => self.scroll_detail(1),
+            Msg::Up if self.detail_open => self.scroll_detail(-1),
+            Msg::Top if self.detail_open => {
+                if let Some(d) = &mut self.detail {
+                    d.scroll = 0;
+                }
+            }
+            Msg::Bottom if self.detail_open => {
+                if let Some(d) = &mut self.detail {
+                    d.scroll = d.max_scroll;
+                }
+            }
+            Msg::HalfPageDown if self.detail_open => self.scroll_detail(HALF_PAGE),
+            Msg::HalfPageUp if self.detail_open => self.scroll_detail(-HALF_PAGE),
             Msg::Down => self.move_selection(1),
             Msg::Up => self.move_selection(-1),
             Msg::Top => self.selected = 0,
@@ -237,6 +332,11 @@ impl App {
     }
 
     fn render_body(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
+        if self.detail_open {
+            self.render_detail(frame, area);
+            return;
+        }
+
         let block = Block::default()
             .borders(Borders::ALL)
             .title(self.active_tab.title());
@@ -268,8 +368,89 @@ impl App {
         frame.render_widget(Paragraph::new(message).block(block), area);
     }
 
+    fn render_detail(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
+        let Some(d) = &self.detail else {
+            let msg = format!("{} Loading pull request…", SPINNER[self.spinner]);
+            let block = Block::default().borders(Borders::ALL).title("Pull Request");
+            frame.render_widget(Paragraph::new(msg).block(block), area);
+            return;
+        };
+
+        let title = format!(
+            "#{} {}",
+            d.pr.id,
+            sanitize(d.pr.title.as_deref().unwrap_or_default())
+        );
+
+        let approvals = d.pr.approvals();
+        let approved_by: Vec<String> = approvals.iter().map(|u| u.label()).collect();
+        let reviewers: Vec<Span> =
+            d.pr.reviewers
+                .iter()
+                .map(|r| {
+                    let approved = approvals
+                        .iter()
+                        .any(|a| a.uuid == r.uuid && r.uuid.is_some());
+                    let mark = if approved { "✔" } else { "⧗" };
+                    Span::raw(format!("{mark} {}  ", r.label()))
+                })
+                .collect();
+
+        let mut lines: Vec<Line> = Vec::new();
+        lines.push(Line::from(vec![
+            Span::raw("State: "),
+            state_cell(d.pr.state.as_deref().unwrap_or_default()),
+        ]));
+        if let Some(author) = &d.pr.author {
+            lines.push(Line::raw(format!("Author: {}", author.label())));
+        }
+        lines.push(Line::raw(format!(
+            "Branch: {} → {}",
+            sanitize(d.pr.source.branch_name()),
+            sanitize(d.pr.destination.branch_name()),
+        )));
+        if !reviewers.is_empty() {
+            let mut spans = vec![Span::raw("Reviewers: ")];
+            spans.extend(reviewers);
+            lines.push(Line::from(spans));
+        } else if !approved_by.is_empty() {
+            lines.push(Line::raw(format!(
+                "Approved by: {}",
+                approved_by.join(", ")
+            )));
+        }
+        lines.push(Line::raw(""));
+        for raw in d.pr.body().unwrap_or("(no description)").lines() {
+            lines.push(Line::raw(sanitize(raw)));
+        }
+        lines.push(Line::raw(""));
+        if self.is_loading() {
+            lines.push(Line::from(vec![Span::raw(format!(
+                "Checks: {} loading…",
+                SPINNER[self.spinner]
+            ))]));
+        } else if d.checks.is_empty() {
+            lines.push(Line::raw("Checks: none reported"));
+        } else {
+            lines.push(Line::raw("Checks:"));
+            for c in &d.checks {
+                let name = c.name.as_deref().or(c.key.as_deref()).unwrap_or("check");
+                lines.push(Line::from(vec![
+                    Span::raw(format!("  {name}  ")),
+                    state_cell(c.state.as_deref().unwrap_or_default()),
+                ]));
+            }
+        }
+
+        let block = Block::default().borders(Borders::ALL).title(title);
+        let para = Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false })
+            .scroll((d.scroll, 0));
+        frame.render_widget(para, area);
+    }
+
     fn render_pr_table(&self, frame: &mut Frame, area: ratatui::layout::Rect, block: Block) {
-        use crate::render::sanitize;
         use ratatui::widgets::{Cell, HighlightSpacing, Row, Table, TableState};
 
         let header = Row::new(["#", "TITLE", "BRANCH", "STATE"])
@@ -317,12 +498,13 @@ impl App {
     }
 }
 
-/// A PR state rendered as a colored span (open=green, merged=cyan, declined=red).
+/// A PR/CI state rendered as a colored span.
 fn state_cell(state: &str) -> Span<'static> {
     let color = match state {
-        "OPEN" => Color::Green,
+        "OPEN" | "SUCCESSFUL" => Color::Green,
         "MERGED" => Color::Cyan,
-        "DECLINED" | "SUPERSEDED" => Color::Red,
+        "INPROGRESS" => Color::Yellow,
+        "DECLINED" | "SUPERSEDED" | "FAILED" | "STOPPED" => Color::Red,
         _ => Color::Gray,
     };
     Span::styled(state.to_owned(), Style::default().fg(color))
@@ -469,6 +651,72 @@ mod tests {
         reordered.reverse();
         app.apply_response(Response::Prs(reordered));
         assert_eq!(app.prs[app.selected].id, 3);
+    }
+
+    fn detail_response(id: u64) -> Response {
+        let pr = serde_json::from_str(&format!(
+            r#"{{"id":{id},"title":"Detail {id}","state":"OPEN",
+                "description":"line one\nline two",
+                "source":{{"branch":{{"name":"feat/{id}"}}}},
+                "destination":{{"branch":{{"name":"main"}}}},
+                "author":{{"display_name":"Dev"}}}}"#
+        ))
+        .unwrap();
+        Response::PrDetail {
+            pr: Box::new(pr),
+            checks: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn open_then_esc_round_trips_preserving_selection() {
+        let mut app = App::new(true);
+        app.apply_response(Response::Prs(prs(3)));
+        app.update(Msg::Down); // select index 1
+        assert_eq!(app.selected, 1);
+        app.update(Msg::Open);
+        assert!(app.detail_open && app.is_loading());
+        app.apply_response(detail_response(2));
+        assert!(app.detail_open && !app.is_loading());
+        // Esc closes the detail (not quit) and the list selection is intact.
+        app.update(Msg::Pop);
+        assert!(!app.detail_open);
+        assert!(!app.should_quit);
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn detail_body_scroll_clamps() {
+        let mut app = App::new(true);
+        app.apply_response(Response::Prs(prs(1)));
+        app.update(Msg::Open);
+        app.apply_response(detail_response(1)); // 2 description lines → max_scroll 2
+        app.update(Msg::Up); // clamps at 0
+                             // Drive well past the end; scroll must clamp, not overflow.
+        for _ in 0..20 {
+            app.update(Msg::Down);
+        }
+        let scroll = app.detail.as_ref().unwrap().scroll;
+        let max = app.detail.as_ref().unwrap().max_scroll;
+        assert_eq!(scroll, max, "scroll should clamp to max_scroll");
+    }
+
+    #[test]
+    fn detail_view_renders_title_and_branches() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(true);
+        app.apply_response(Response::Prs(prs(1)));
+        app.update(Msg::Open);
+        app.apply_response(detail_response(1));
+        terminal.draw(|f| app.view(f)).unwrap();
+        let text = buffer_text(terminal.backend());
+        assert!(text.contains("Detail 1"), "buffer: {text}");
+        assert!(
+            text.contains("feat/1") && text.contains("main"),
+            "buffer: {text}"
+        );
+        assert!(text.contains("Dev"), "buffer: {text}");
     }
 
     #[test]
