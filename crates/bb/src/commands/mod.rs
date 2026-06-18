@@ -8,6 +8,7 @@ pub mod auth;
 pub mod browse;
 pub mod completion;
 pub mod config;
+pub mod dash;
 pub mod issue;
 pub mod man;
 pub mod pipeline;
