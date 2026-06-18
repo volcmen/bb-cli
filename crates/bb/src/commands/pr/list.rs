@@ -5,9 +5,9 @@ use crate::api::BitbucketClient;
 use crate::core::{AuthError, Context};
 use clap::Args;
 
+use super::query::{self, PrFilter};
 use super::render;
 use crate::auth;
-use crate::render::percent_encode;
 
 /// JSON fields a pull request can be projected to with `--json`.
 const FIELDS: &[&str] = &[
@@ -54,26 +54,12 @@ pub fn run(ctx: &Context, args: ListArgs) -> anyhow::Result<()> {
     };
     let client = BitbucketClient::new(ctx.transport.clone(), Some(header));
 
-    // Bitbucket caps pagelen at 50; never request more than the user wants.
-    let pagelen = args.limit.clamp(1, 50);
-    let prefix = format!(
-        "/repositories/{}/{}/pullrequests?pagelen={pagelen}",
-        repo.workspace(),
-        repo.slug(),
-    );
-    // Bitbucket ignores the `state=` param when a `q=` BBQL filter is present,
-    // so when `--base` adds a `q`, the state must be folded into it too (#114).
-    let path = if let Some(branch) = &args.base {
-        let q = format!(
-            "state=\"{}\" AND destination.branch.name=\"{}\"",
-            args.state, branch
-        );
-        format!("{prefix}&q={}", percent_encode(&q))
-    } else {
-        format!("{prefix}&state={}", args.state)
+    let filter = PrFilter {
+        state: args.state.clone(),
+        base: args.base.clone(),
+        limit: args.limit,
     };
-
-    let prs: Vec<PullRequest> = client.paginate(&path, Some(args.limit))?;
+    let prs: Vec<PullRequest> = query::list(&client, &repo, &filter)?;
 
     if args.json.requested() {
         args.json.validate(FIELDS)?;
@@ -109,6 +95,7 @@ mod tests {
     use crate::git::{ShellGit, StubRunner};
 
     use super::*;
+    use crate::render::percent_encode;
     use crate::testsupport::{test_context, ScriptedPrompter};
 
     fn git() -> Arc<dyn GitClient> {

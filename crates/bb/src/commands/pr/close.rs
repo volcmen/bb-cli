@@ -4,6 +4,8 @@ use crate::api::{BitbucketClient, PullRequest};
 use crate::core::Context;
 use clap::Args;
 
+use super::actions;
+
 #[derive(Args, Debug)]
 pub struct CloseArgs {
     /// Pull request id (defaults to the PR for the current branch)
@@ -12,13 +14,6 @@ pub struct CloseArgs {
     /// Reason for declining
     #[arg(long, short = 'm')]
     pub message: Option<String>,
-}
-
-/// The JSON body sent to `POST .../pullrequests/{id}/decline`.
-#[derive(serde::Serialize)]
-struct DeclineBody<'a> {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    message: Option<&'a str>,
 }
 
 /// Run `bb pr close` (decline the pull request).
@@ -40,15 +35,7 @@ pub fn run(ctx: &Context, args: CloseArgs) -> anyhow::Result<()> {
         None => super::finder::resolve(ctx, &client, &repo, None)?.id,
     };
 
-    let body = DeclineBody {
-        message: args.message.as_deref(),
-    };
-    let path = format!(
-        "/repositories/{}/{}/pullrequests/{id}/decline",
-        repo.workspace(),
-        repo.slug()
-    );
-    let declined: PullRequest = client.post(&path, &body)?;
+    let declined: PullRequest = actions::decline(&client, &repo, id, args.message.as_deref())?;
 
     let state = declined.state.as_deref().unwrap_or("DECLINED");
     ctx.io

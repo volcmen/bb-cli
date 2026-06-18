@@ -1,8 +1,10 @@
 //! `bb pr approve`.
 
 use crate::api::BitbucketClient;
-use crate::core::{Context, Method};
+use crate::core::Context;
 use clap::Args;
+
+use super::actions;
 
 #[derive(Args, Debug)]
 pub struct ApproveArgs {
@@ -33,18 +35,12 @@ pub fn run(ctx: &Context, args: ApproveArgs) -> anyhow::Result<()> {
         None => super::finder::resolve(ctx, &client, &repo, None)?.id,
     };
 
-    let path = format!(
-        "/repositories/{}/{}/pullrequests/{id}/approve",
-        repo.workspace(),
-        repo.slug()
-    );
-
     if args.undo {
-        client.send_empty(Method::Delete, &path)?;
+        actions::unapprove(&client, &repo, id)?;
         ctx.io
             .println(&format!("✓ Removed your approval from #{id}"));
     } else {
-        client.send_empty(Method::Post, &path)?;
+        actions::approve(&client, &repo, id)?;
         ctx.io.println(&format!("✓ Approved pull request #{id}"));
     }
     Ok(())
@@ -56,7 +52,7 @@ mod tests {
 
     use crate::api::testing::FakeTransport;
     use crate::config::FileConfig;
-    use crate::core::{ConfigProvider, GitClient, RepoId, Transport};
+    use crate::core::{ConfigProvider, GitClient, Method, RepoId, Transport};
     use crate::git::{ShellGit, StubRunner};
 
     use super::*;

@@ -23,16 +23,6 @@ pub struct CommentArgs {
 
 // ----- request/response shapes ------------------------------------------
 
-#[derive(serde::Serialize)]
-struct Content<'a> {
-    raw: &'a str,
-}
-
-#[derive(serde::Serialize)]
-struct CommentBody<'a> {
-    content: Content<'a>,
-}
-
 /// One comment in a `GET .../comments` page.
 #[derive(serde::Deserialize)]
 struct PrComment {
@@ -73,10 +63,7 @@ pub fn run(ctx: &Context, args: CommentArgs) -> anyhow::Result<()> {
     }
 
     let body = resolve_body(ctx, &args)?;
-    let payload = CommentBody {
-        content: Content { raw: &body },
-    };
-    let _resp: serde_json::Value = client.post(&path, &payload)?;
+    let _resp = super::actions::comment(&client, &repo, id, &body)?;
     ctx.io
         .println(&format!("✓ Commented on pull request #{id}"));
     Ok(())
