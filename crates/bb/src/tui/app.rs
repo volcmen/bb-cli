@@ -11,7 +11,7 @@ use ratatui::Frame;
 
 use std::collections::HashSet;
 
-use crate::api::models::{CommitStatus, PullRequest};
+use crate::api::models::{CommitStatus, Issue, PullRequest};
 use crate::render::sanitize;
 
 use super::worker::{RequestKind, Response};
@@ -142,6 +142,15 @@ pub struct App {
     pub prs: Vec<PullRequest>,
     /// Index of the highlighted PR row.
     pub selected: usize,
+    /// Loaded issues.
+    pub issues: Vec<Issue>,
+    /// Index of the highlighted issue row.
+    pub issue_selected: usize,
+    /// Whether the issue list has been fetched yet (lazy on first switch).
+    pub issues_loaded: bool,
+    /// Whether the repo's issue tracker is disabled.
+    pub issues_disabled: bool,
+    issue_detail: Option<Issue>,
     /// In-flight request kinds (drives the spinner).
     pub loading: Vec<RequestKind>,
     /// Transient status/error toast.
@@ -164,6 +173,11 @@ impl App {
             should_quit: false,
             prs: Vec::new(),
             selected: 0,
+            issues: Vec::new(),
+            issue_selected: 0,
+            issues_loaded: false,
+            issues_disabled: false,
+            issue_detail: None,
             loading: Vec::new(),
             status: None,
             detail_open: false,
@@ -173,13 +187,62 @@ impl App {
         }
     }
 
-    /// The PR an action targets: the detail PR when open, else the selected row.
+    /// The PR an action (approve/merge/decline/comment) targets — only on the PR
+    /// section (those actions don't apply to issues).
     #[must_use]
     pub fn action_target_id(&self) -> Option<u64> {
+        if self.active_tab != Tab::PullRequests {
+            return None;
+        }
         if self.detail_open {
             self.detail_pr_id()
         } else {
             self.selected_pr_id()
+        }
+    }
+
+    /// Length of the active section's list.
+    fn active_len(&self) -> usize {
+        match self.active_tab {
+            Tab::PullRequests => self.prs.len(),
+            Tab::Issues => self.issues.len(),
+            Tab::Pipelines => 0,
+        }
+    }
+
+    /// The active section's selection index.
+    fn active_sel(&self) -> usize {
+        match self.active_tab {
+            Tab::Issues => self.issue_selected,
+            _ => self.selected,
+        }
+    }
+
+    /// Set the active section's selection (clamped to its list).
+    fn set_active_sel(&mut self, value: usize) {
+        let clamped = value.min(self.active_len().saturating_sub(1));
+        match self.active_tab {
+            Tab::Issues => self.issue_selected = clamped,
+            _ => self.selected = clamped,
+        }
+    }
+
+    /// Whether the issue list still needs its initial (lazy) load.
+    #[must_use]
+    pub fn needs_issue_load(&self) -> bool {
+        self.active_tab == Tab::Issues
+            && self.authed
+            && !self.issues_loaded
+            && !self.loading.contains(&RequestKind::Issues)
+    }
+
+    /// The id of the highlighted issue, if the Issues section is active.
+    #[must_use]
+    pub fn selected_issue_id(&self) -> Option<u64> {
+        if self.active_tab == Tab::Issues {
+            self.issues.get(self.issue_selected).map(|i| i.id)
+        } else {
+            None
         }
     }
 
@@ -233,13 +296,16 @@ impl App {
         }
     }
 
-    /// Move the PR selection by `delta` rows, clamped to the loaded set.
+    /// Move the active section's selection by `delta` rows, clamped to its list.
     fn move_selection(&mut self, delta: isize) {
-        if self.prs.is_empty() {
+        if self.active_len() == 0 {
             return;
         }
-        let max = self.prs.len() as isize - 1;
-        self.selected = (self.selected as isize).saturating_add(delta).clamp(0, max) as usize;
+        let max = self.active_len() as isize - 1;
+        let next = (self.active_sel() as isize)
+            .saturating_add(delta)
+            .clamp(0, max);
+        self.set_active_sel(next as usize);
     }
 
     /// Scroll the detail body by `delta` lines, clamped to its content.
@@ -262,13 +328,23 @@ impl App {
         }
     }
 
-    /// The web URL to open for `o`: the detail PR if open, else the selected row.
+    /// The web URL to open for `o`: the open detail's PR/issue, else the active
+    /// section's selected row.
     #[must_use]
     pub fn current_url(&self) -> Option<&str> {
-        if let Some(d) = &self.detail {
-            d.pr.html_url()
-        } else {
-            self.prs.get(self.selected).and_then(PullRequest::html_url)
+        if self.detail_open {
+            return match self.active_tab {
+                Tab::Issues => self.issue_detail.as_ref().and_then(Issue::html_url),
+                _ => self.detail.as_ref().and_then(|d| d.pr.html_url()),
+            };
+        }
+        match self.active_tab {
+            Tab::PullRequests => self.prs.get(self.selected).and_then(PullRequest::html_url),
+            Tab::Issues => self
+                .issues
+                .get(self.issue_selected)
+                .and_then(Issue::html_url),
+            Tab::Pipelines => None,
         }
     }
 
@@ -312,6 +388,31 @@ impl App {
                 }
                 self.done(RequestKind::PrDetail);
             }
+            Response::Issues(issues) => {
+                let prev_id = self.issues.get(self.issue_selected).map(|i| i.id);
+                self.issues = issues;
+                self.issue_selected = prev_id
+                    .and_then(|id| self.issues.iter().position(|i| i.id == id))
+                    .unwrap_or(0)
+                    .min(self.issues.len().saturating_sub(1));
+                self.issues_loaded = true;
+                self.issues_disabled = false;
+                self.done(RequestKind::Issues);
+            }
+            Response::IssueDetail(issue) => {
+                if self.detail_open {
+                    self.issue_detail = Some(*issue);
+                }
+                self.done(RequestKind::IssueDetail);
+            }
+            Response::IssuesDisabled => {
+                self.issues_disabled = true;
+                self.issues_loaded = true;
+                self.detail_open = false;
+                self.issue_detail = None;
+                self.done(RequestKind::Issues);
+                self.done(RequestKind::IssueDetail);
+            }
             Response::ActionDone(message) => {
                 self.done(RequestKind::Action);
                 self.status = Some(message);
@@ -339,18 +440,26 @@ impl App {
                 } else if self.detail_open {
                     self.detail_open = false;
                     self.detail = None;
+                    self.issue_detail = None;
                     self.done(RequestKind::PrDetail);
+                    self.done(RequestKind::IssueDetail);
                 } else {
                     self.should_quit = true;
                 }
             }
-            Msg::Open => {
-                if self.active_tab == Tab::PullRequests && !self.prs.is_empty() {
+            Msg::Open => match self.active_tab {
+                Tab::PullRequests if !self.prs.is_empty() => {
                     self.detail_open = true;
                     self.detail = None;
                     self.begin(RequestKind::PrDetail);
                 }
-            }
+                Tab::Issues if !self.issues.is_empty() => {
+                    self.detail_open = true;
+                    self.issue_detail = None;
+                    self.begin(RequestKind::IssueDetail);
+                }
+                _ => {}
+            },
             Msg::ToggleHelp => {
                 self.modal = if matches!(self.modal, Some(Modal::Help)) {
                     None
@@ -430,8 +539,8 @@ impl App {
             Msg::HalfPageUp if self.detail_open => self.scroll_detail(-HALF_PAGE),
             Msg::Down => self.move_selection(1),
             Msg::Up => self.move_selection(-1),
-            Msg::Top => self.selected = 0,
-            Msg::Bottom => self.selected = self.prs.len().saturating_sub(1),
+            Msg::Top => self.set_active_sel(0),
+            Msg::Bottom => self.set_active_sel(self.active_len().saturating_sub(1)),
             Msg::HalfPageDown => self.move_selection(HALF_PAGE),
             Msg::HalfPageUp => self.move_selection(-HALF_PAGE),
         }
@@ -495,32 +604,75 @@ impl App {
             .borders(Borders::ALL)
             .title(self.active_tab.title());
 
-        // The PR table is the one rich view so far; everything else is a centered
-        // message inside the same bordered block. (Toasts/errors live in the
-        // footer so they never replace the list.)
-        if self.authed
-            && !self.is_loading()
-            && self.active_tab == Tab::PullRequests
-            && !self.prs.is_empty()
-        {
-            self.render_pr_table(frame, area, block);
+        // A populated section renders its table; otherwise a centered message
+        // inside the same bordered block. (Toasts/errors live in the footer so
+        // they never replace the list.)
+        if !self.authed {
+            let p = Paragraph::new("Not logged in — run `bb auth login`").block(block);
+            frame.render_widget(p, area);
             return;
         }
-
-        let message = if !self.authed {
-            "Not logged in — run `bb auth login`".to_owned()
-        } else if self.is_loading() {
-            format!("{} Loading pull requests…", SPINNER[self.spinner])
-        } else {
-            match self.active_tab {
-                Tab::PullRequests => "No pull requests".to_owned(),
-                other => format!("{} — coming soon", other.title()),
+        let message = match self.active_tab {
+            Tab::PullRequests => {
+                if self.is_loading() {
+                    format!("{} Loading pull requests…", SPINNER[self.spinner])
+                } else if self.prs.is_empty() {
+                    "No pull requests".to_owned()
+                } else {
+                    return self.render_pr_table(frame, area, block);
+                }
             }
+            Tab::Issues => {
+                if self.issues_disabled {
+                    "Issue tracker not enabled for this repository".to_owned()
+                } else if self.is_loading() {
+                    format!("{} Loading issues…", SPINNER[self.spinner])
+                } else if self.issues.is_empty() {
+                    "No issues".to_owned()
+                } else {
+                    return self.render_issue_table(frame, area, block);
+                }
+            }
+            Tab::Pipelines => "Pipelines — coming soon".to_owned(),
         };
         frame.render_widget(Paragraph::new(message).block(block), area);
     }
 
+    fn render_issue_table(&self, frame: &mut Frame, area: ratatui::layout::Rect, block: Block) {
+        use ratatui::widgets::{Cell, HighlightSpacing, Row, Table, TableState};
+
+        let header = Row::new(["#", "TITLE", "KIND", "PRIORITY", "STATE"])
+            .style(Style::default().add_modifier(Modifier::BOLD));
+        let rows = self.issues.iter().map(|i| {
+            Row::new([
+                Cell::from(format!("#{}", i.id)),
+                Cell::from(sanitize(i.title.as_deref().unwrap_or_default())),
+                Cell::from(i.kind.clone().unwrap_or_default()),
+                Cell::from(i.priority.clone().unwrap_or_default()),
+                Cell::from(i.state.clone().unwrap_or_default()),
+            ])
+        });
+        let widths = [
+            Constraint::Length(6),
+            Constraint::Fill(1),
+            Constraint::Length(10),
+            Constraint::Length(10),
+            Constraint::Length(12),
+        ];
+        let table = Table::new(rows, widths)
+            .header(header)
+            .block(block)
+            .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+            .highlight_spacing(HighlightSpacing::Always);
+        let mut state = TableState::default().with_selected(Some(self.issue_selected));
+        frame.render_stateful_widget(table, area, &mut state);
+    }
+
     fn render_detail(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
+        if self.active_tab == Tab::Issues {
+            self.render_issue_detail(frame, area);
+            return;
+        }
         let Some(d) = &self.detail else {
             let msg = format!("{} Loading pull request…", SPINNER[self.spinner]);
             let block = Block::default().borders(Borders::ALL).title("Pull Request");
@@ -599,6 +751,50 @@ impl App {
             .block(block)
             .wrap(Wrap { trim: false })
             .scroll((d.scroll, 0));
+        frame.render_widget(para, area);
+    }
+
+    fn render_issue_detail(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
+        let Some(i) = &self.issue_detail else {
+            let msg = format!("{} Loading issue…", SPINNER[self.spinner]);
+            let block = Block::default().borders(Borders::ALL).title("Issue");
+            frame.render_widget(Paragraph::new(msg).block(block), area);
+            return;
+        };
+
+        let title = format!(
+            "#{} {}",
+            i.id,
+            sanitize(i.title.as_deref().unwrap_or_default())
+        );
+        let mut lines: Vec<Line> = vec![
+            Line::from(vec![
+                Span::raw("State: "),
+                state_cell(i.state.as_deref().unwrap_or_default()),
+            ]),
+            Line::raw(format!(
+                "Kind: {}    Priority: {}",
+                i.kind.as_deref().unwrap_or("—"),
+                i.priority.as_deref().unwrap_or("—"),
+            )),
+        ];
+        if let Some(reporter) = &i.reporter {
+            lines.push(Line::raw(format!("Reporter: {}", reporter.label())));
+        }
+        lines.push(Line::raw(""));
+        let body = i
+            .content
+            .as_ref()
+            .and_then(|c| c.raw.as_deref())
+            .unwrap_or("(no description)");
+        for raw in body.lines() {
+            lines.push(Line::raw(sanitize(raw)));
+        }
+
+        let block = Block::default().borders(Borders::ALL).title(title);
+        let para = Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false });
         frame.render_widget(para, area);
     }
 
@@ -937,6 +1133,95 @@ mod tests {
         app.update(Msg::Pop);
         app.update(Msg::Merge);
         assert_eq!(app.input_context(), InputContext::Confirm);
+    }
+
+    fn issues(n: u64) -> Vec<Issue> {
+        (1..=n)
+            .map(|i| {
+                serde_json::from_str(&format!(
+                    r#"{{"id":{i},"title":"Issue {i}","state":"new","kind":"bug",
+                        "priority":"major","content":{{"raw":"body {i}"}}}}"#
+                ))
+                .unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn per_tab_selection_is_independent() {
+        let mut app = App::new(true);
+        app.apply_response(Response::Prs(prs(3)));
+        app.apply_response(Response::Issues(issues(4)));
+        // On the PR tab, motion moves the PR selection.
+        app.update(Msg::Down);
+        assert_eq!(app.selected, 1);
+        assert_eq!(app.issue_selected, 0);
+        // Switch to Issues; motion moves the issue selection, PR untouched.
+        app.update(Msg::SelectTab(1));
+        app.update(Msg::Bottom);
+        assert_eq!(app.issue_selected, 3);
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn issues_disabled_sets_flag_and_renders_screen() {
+        let mut app = App::new(true);
+        app.update(Msg::SelectTab(1));
+        app.begin(RequestKind::Issues);
+        app.apply_response(Response::IssuesDisabled);
+        assert!(app.issues_disabled && app.issues_loaded && !app.is_loading());
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.view(f)).unwrap();
+        assert!(buffer_text(terminal.backend()).contains("Issue tracker not enabled"));
+    }
+
+    #[test]
+    fn issue_detail_opens_and_renders() {
+        let mut app = App::new(true);
+        app.update(Msg::SelectTab(1));
+        app.apply_response(Response::Issues(issues(2)));
+        app.update(Msg::Open);
+        assert!(app.detail_open && app.is_loading());
+        let issue: Issue = serde_json::from_str(
+            r#"{"id":1,"title":"Issue 1","state":"new","kind":"bug","content":{"raw":"the body"}}"#,
+        )
+        .unwrap();
+        app.apply_response(Response::IssueDetail(Box::new(issue)));
+        assert!(!app.is_loading());
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.view(f)).unwrap();
+        let text = buffer_text(terminal.backend());
+        assert!(text.contains("Issue 1"), "buffer: {text}");
+        assert!(text.contains("the body"), "buffer: {text}");
+    }
+
+    #[test]
+    fn issue_table_renders_rows() {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(true);
+        app.update(Msg::SelectTab(1));
+        app.apply_response(Response::Issues(issues(2)));
+        terminal.draw(|f| app.view(f)).unwrap();
+        let text = buffer_text(terminal.backend());
+        assert!(
+            text.contains("#1") && text.contains("Issue 1"),
+            "buffer: {text}"
+        );
+        assert!(text.contains("bug"), "buffer: {text}");
+    }
+
+    #[test]
+    fn pr_actions_disabled_on_issue_tab() {
+        let mut app = App::new(true);
+        app.apply_response(Response::Issues(issues(2)));
+        app.update(Msg::SelectTab(1));
+        // action_target_id is None on the Issues tab (PR actions don't apply).
+        assert_eq!(app.action_target_id(), None);
     }
 
     #[test]
