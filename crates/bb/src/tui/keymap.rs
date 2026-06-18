@@ -15,7 +15,19 @@ pub fn map_key(key: KeyEvent, ctx: InputContext) -> Option<Msg> {
         InputContext::Comment => comment_key(key),
         InputContext::Confirm => confirm_key(key),
         InputContext::Help => help_key(key),
+        InputContext::Filter => filter_key(key),
         InputContext::Normal => normal_key(key),
+    }
+}
+
+/// In the fuzzy-filter input: type to narrow, Enter applies, Esc clears.
+fn filter_key(key: KeyEvent) -> Option<Msg> {
+    match key.code {
+        KeyCode::Esc => Some(Msg::ClearFilter),
+        KeyCode::Enter => Some(Msg::ApplyFilter),
+        KeyCode::Backspace => Some(Msg::FilterBackspace),
+        KeyCode::Char(c) => Some(Msg::FilterChar(c)),
+        _ => None,
     }
 }
 
@@ -66,6 +78,7 @@ fn normal_key(key: KeyEvent) -> Option<Msg> {
         KeyCode::Char('d') if ctrl => Some(Msg::HalfPageDown),
         KeyCode::Char('u') if ctrl => Some(Msg::HalfPageUp),
         KeyCode::Char('r') => Some(Msg::Refresh),
+        KeyCode::Char('/') => Some(Msg::StartFilter),
         KeyCode::Enter | KeyCode::Char('l') => Some(Msg::Open),
         KeyCode::Char('o') => Some(Msg::OpenBrowser),
         KeyCode::Char('a') => Some(Msg::Approve),
@@ -124,6 +137,25 @@ mod tests {
             map_key(key(KeyCode::Char('q')), c),
             Some(Msg::InsertChar('q'))
         );
+    }
+
+    #[test]
+    fn filter_context_captures_text() {
+        let f = InputContext::Filter;
+        assert_eq!(
+            map_key(key(KeyCode::Char('/')), InputContext::Normal),
+            Some(Msg::StartFilter)
+        );
+        assert_eq!(
+            map_key(key(KeyCode::Char('a')), f),
+            Some(Msg::FilterChar('a'))
+        );
+        assert_eq!(
+            map_key(key(KeyCode::Backspace), f),
+            Some(Msg::FilterBackspace)
+        );
+        assert_eq!(map_key(key(KeyCode::Enter), f), Some(Msg::ApplyFilter));
+        assert_eq!(map_key(key(KeyCode::Esc), f), Some(Msg::ClearFilter));
     }
 
     #[test]

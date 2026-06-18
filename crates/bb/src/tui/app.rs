@@ -11,7 +11,7 @@ use ratatui::Frame;
 
 use std::collections::HashSet;
 
-use crate::api::models::{CommitStatus, Issue, Pipeline, PipelineStep, PullRequest};
+use crate::api::models::{CommitStatus, Issue, Pipeline, PipelineStep, PullRequest, User};
 use crate::render::sanitize;
 
 use super::worker::{RequestKind, Response};
@@ -82,6 +82,8 @@ pub enum InputContext {
     Help,
     Confirm,
     Comment,
+    /// Typing into the in-list fuzzy filter (`/`).
+    Filter,
 }
 
 /// Semantic events produced by [`keymap`](super::keymap) from raw key input.
@@ -122,6 +124,16 @@ pub enum Msg {
     Backspace,
     /// Re-fetch the active section (handled by the event loop, which owns the worker).
     Refresh,
+    /// Open the in-list fuzzy filter (`/`).
+    StartFilter,
+    /// Type a character into the filter query.
+    FilterChar(char),
+    /// Delete the last character of the filter query.
+    FilterBackspace,
+    /// Stop editing the filter but keep it applied (Enter).
+    ApplyFilter,
+    /// Clear and close the filter (Esc).
+    ClearFilter,
     /// Timer tick — advances the spinner (and later drives auto-refresh).
     Tick,
 }
@@ -158,6 +170,10 @@ pub struct App {
     /// Whether the pipeline list has been fetched yet (lazy on first switch).
     pub pipelines_loaded: bool,
     pipeline_detail: Option<(Pipeline, Vec<PipelineStep>)>,
+    /// The current fuzzy-filter query (empty = no filter).
+    filter_query: String,
+    /// Whether the filter input is focused (capturing keys).
+    filtering: bool,
     /// In-flight request kinds (drives the spinner).
     pub loading: Vec<RequestKind>,
     /// Transient status/error toast.
@@ -189,6 +205,8 @@ impl App {
             pipeline_selected: 0,
             pipelines_loaded: false,
             pipeline_detail: None,
+            filter_query: String::new(),
+            filtering: false,
             loading: Vec::new(),
             status: None,
             detail_open: false,
@@ -212,13 +230,66 @@ impl App {
         }
     }
 
-    /// Length of the active section's list.
+    /// Length of the active section's **visible** (filtered) list.
     fn active_len(&self) -> usize {
+        self.visible_indices().len()
+    }
+
+    /// Indices into the active section's list that match the fuzzy filter (all
+    /// indices when the filter is empty), in list order.
+    fn visible_indices(&self) -> Vec<usize> {
+        let q = self.filter_query.to_lowercase();
         match self.active_tab {
-            Tab::PullRequests => self.prs.len(),
-            Tab::Issues => self.issues.len(),
-            Tab::Pipelines => self.pipelines.len(),
+            Tab::PullRequests => self
+                .prs
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| fuzzy_match(&pr_haystack(p), &q))
+                .map(|(i, _)| i)
+                .collect(),
+            Tab::Issues => self
+                .issues
+                .iter()
+                .enumerate()
+                .filter(|(_, i)| fuzzy_match(&issue_haystack(i), &q))
+                .map(|(i, _)| i)
+                .collect(),
+            Tab::Pipelines => self
+                .pipelines
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| fuzzy_match(&pipeline_haystack(p), &q))
+                .map(|(i, _)| i)
+                .collect(),
         }
+    }
+
+    /// The highlighted PR, mapped through the visible filter (PR section only).
+    fn active_pr(&self) -> Option<&PullRequest> {
+        if self.active_tab != Tab::PullRequests {
+            return None;
+        }
+        self.visible_indices()
+            .get(self.selected)
+            .and_then(|&i| self.prs.get(i))
+    }
+
+    fn active_issue(&self) -> Option<&Issue> {
+        if self.active_tab != Tab::Issues {
+            return None;
+        }
+        self.visible_indices()
+            .get(self.issue_selected)
+            .and_then(|&i| self.issues.get(i))
+    }
+
+    fn active_pipeline(&self) -> Option<&Pipeline> {
+        if self.active_tab != Tab::Pipelines {
+            return None;
+        }
+        self.visible_indices()
+            .get(self.pipeline_selected)
+            .and_then(|&i| self.pipelines.get(i))
     }
 
     /// The active section's selection index.
@@ -262,13 +333,7 @@ impl App {
     /// The build number of the highlighted pipeline, if the Pipelines section is active.
     #[must_use]
     pub fn selected_pipeline_build(&self) -> Option<u64> {
-        if self.active_tab == Tab::Pipelines {
-            self.pipelines
-                .get(self.pipeline_selected)
-                .and_then(|p| p.build_number)
-        } else {
-            None
-        }
+        self.active_pipeline().and_then(|p| p.build_number)
     }
 
     /// Whether the issue list still needs its initial (lazy) load.
@@ -283,11 +348,7 @@ impl App {
     /// The id of the highlighted issue, if the Issues section is active.
     #[must_use]
     pub fn selected_issue_id(&self) -> Option<u64> {
-        if self.active_tab == Tab::Issues {
-            self.issues.get(self.issue_selected).map(|i| i.id)
-        } else {
-            None
-        }
+        self.active_issue().map(|i| i.id)
     }
 
     /// The id of the PR shown in the detail pane, if open.
@@ -329,13 +390,14 @@ impl App {
         }
     }
 
-    /// How the next key should be interpreted (modal-aware).
+    /// How the next key should be interpreted (modal- and filter-aware).
     #[must_use]
     pub fn input_context(&self) -> InputContext {
         match &self.modal {
             Some(Modal::Help) => InputContext::Help,
             Some(Modal::Confirm { .. }) => InputContext::Confirm,
             Some(Modal::Comment { .. }) => InputContext::Comment,
+            None if self.filtering => InputContext::Filter,
             None => InputContext::Normal,
         }
     }
@@ -365,11 +427,7 @@ impl App {
     /// The id of the highlighted PR, if the PR section is active and non-empty.
     #[must_use]
     pub fn selected_pr_id(&self) -> Option<u64> {
-        if self.active_tab == Tab::PullRequests {
-            self.prs.get(self.selected).map(|p| p.id)
-        } else {
-            None
-        }
+        self.active_pr().map(|p| p.id)
     }
 
     /// The web URL to open for `o`: the open detail's PR/issue, else the active
@@ -383,11 +441,8 @@ impl App {
             };
         }
         match self.active_tab {
-            Tab::PullRequests => self.prs.get(self.selected).and_then(PullRequest::html_url),
-            Tab::Issues => self
-                .issues
-                .get(self.issue_selected)
-                .and_then(Issue::html_url),
+            Tab::PullRequests => self.active_pr().and_then(PullRequest::html_url),
+            Tab::Issues => self.active_issue().and_then(Issue::html_url),
             Tab::Pipelines => None,
         }
     }
@@ -575,6 +630,25 @@ impl App {
                     buffer.pop();
                 }
             }
+            Msg::StartFilter => {
+                self.filtering = true;
+                self.filter_query.clear();
+                self.set_active_sel(0);
+            }
+            Msg::FilterChar(c) => {
+                self.filter_query.push(c);
+                self.set_active_sel(0);
+            }
+            Msg::FilterBackspace => {
+                self.filter_query.pop();
+                self.set_active_sel(0);
+            }
+            Msg::ApplyFilter => self.filtering = false,
+            Msg::ClearFilter => {
+                self.filter_query.clear();
+                self.filtering = false;
+                self.set_active_sel(0);
+            }
             // Acted on by the event loop (worker / Browser seam).
             Msg::Approve | Msg::OpenBrowser | Msg::ConfirmYes | Msg::Submit | Msg::Refresh => {}
             Msg::SelectTab(n) => {
@@ -632,14 +706,21 @@ impl App {
 
         frame.render_widget(self.tab_bar(), chunks[0]);
         self.render_body(frame, chunks[1]);
-        let footer = match &self.status {
-            Some(status) => Line::from(Span::styled(
+        let footer = if self.filtering || !self.filter_query.is_empty() {
+            let cursor = if self.filtering { "_" } else { "" };
+            Line::from(Span::styled(
+                format!("/{}{cursor}", self.filter_query),
+                Style::default().fg(Color::Cyan),
+            ))
+        } else if let Some(status) = &self.status {
+            Line::from(Span::styled(
                 status.clone(),
                 Style::default().fg(Color::Yellow),
-            )),
-            None => Line::from(Span::raw(
-                "j/k move · ↵ open · a approve · m merge · x decline · C comment · r refresh · ? help · q quit",
-            )),
+            ))
+        } else {
+            Line::from(Span::raw(
+                "j/k move · / filter · ↵ open · a approve · m merge · x decline · C comment · r refresh · ? help · q quit",
+            ))
         };
         frame.render_widget(Paragraph::new(footer), chunks[2]);
 
@@ -686,46 +767,61 @@ impl App {
             frame.render_widget(p, area);
             return;
         }
+        let visible = self.visible_indices();
+        let empty_msg = |base: &str| {
+            if self.filter_query.is_empty() {
+                base.to_owned()
+            } else {
+                "No matches".to_owned()
+            }
+        };
         let message = match self.active_tab {
             Tab::PullRequests => {
-                if self.is_loading() {
+                if self.is_loading() && self.prs.is_empty() {
                     format!("{} Loading pull requests…", SPINNER[self.spinner])
-                } else if self.prs.is_empty() {
-                    "No pull requests".to_owned()
+                } else if visible.is_empty() {
+                    empty_msg("No pull requests")
                 } else {
-                    return self.render_pr_table(frame, area, block);
+                    return self.render_pr_table(frame, area, block, &visible);
                 }
             }
             Tab::Issues => {
                 if self.issues_disabled {
                     "Issue tracker not enabled for this repository".to_owned()
-                } else if self.is_loading() {
+                } else if self.is_loading() && self.issues.is_empty() {
                     format!("{} Loading issues…", SPINNER[self.spinner])
-                } else if self.issues.is_empty() {
-                    "No issues".to_owned()
+                } else if visible.is_empty() {
+                    empty_msg("No issues")
                 } else {
-                    return self.render_issue_table(frame, area, block);
+                    return self.render_issue_table(frame, area, block, &visible);
                 }
             }
             Tab::Pipelines => {
                 if self.is_loading() && self.pipelines.is_empty() {
                     format!("{} Loading pipelines…", SPINNER[self.spinner])
-                } else if self.pipelines.is_empty() {
-                    "No pipelines".to_owned()
+                } else if visible.is_empty() {
+                    empty_msg("No pipelines")
                 } else {
-                    return self.render_pipeline_table(frame, area, block);
+                    return self.render_pipeline_table(frame, area, block, &visible);
                 }
             }
         };
         frame.render_widget(Paragraph::new(message).block(block), area);
     }
 
-    fn render_pipeline_table(&self, frame: &mut Frame, area: ratatui::layout::Rect, block: Block) {
+    fn render_pipeline_table(
+        &self,
+        frame: &mut Frame,
+        area: ratatui::layout::Rect,
+        block: Block,
+        visible: &[usize],
+    ) {
         use ratatui::widgets::{Cell, HighlightSpacing, Row, Table, TableState};
 
         let header = Row::new(["#", "STATE", "RESULT", "REF", "CREATED"])
             .style(Style::default().add_modifier(Modifier::BOLD));
-        let rows = self.pipelines.iter().map(|p| {
+        let rows = visible.iter().map(|&i| {
+            let p = &self.pipelines[i];
             let build = p
                 .build_number
                 .map_or_else(|| "?".to_owned(), |n| format!("#{n}"));
@@ -759,12 +855,19 @@ impl App {
         frame.render_stateful_widget(table, area, &mut state);
     }
 
-    fn render_issue_table(&self, frame: &mut Frame, area: ratatui::layout::Rect, block: Block) {
+    fn render_issue_table(
+        &self,
+        frame: &mut Frame,
+        area: ratatui::layout::Rect,
+        block: Block,
+        visible: &[usize],
+    ) {
         use ratatui::widgets::{Cell, HighlightSpacing, Row, Table, TableState};
 
         let header = Row::new(["#", "TITLE", "KIND", "PRIORITY", "STATE"])
             .style(Style::default().add_modifier(Modifier::BOLD));
-        let rows = self.issues.iter().map(|i| {
+        let rows = visible.iter().map(|&idx| {
+            let i = &self.issues[idx];
             Row::new([
                 Cell::from(format!("#{}", i.id)),
                 Cell::from(sanitize(i.title.as_deref().unwrap_or_default())),
@@ -973,12 +1076,19 @@ impl App {
         frame.render_widget(para, area);
     }
 
-    fn render_pr_table(&self, frame: &mut Frame, area: ratatui::layout::Rect, block: Block) {
+    fn render_pr_table(
+        &self,
+        frame: &mut Frame,
+        area: ratatui::layout::Rect,
+        block: Block,
+        visible: &[usize],
+    ) {
         use ratatui::widgets::{Cell, HighlightSpacing, Row, Table, TableState};
 
         let header = Row::new(["#", "TITLE", "BRANCH", "STATE"])
             .style(Style::default().add_modifier(Modifier::BOLD));
-        let rows = self.prs.iter().map(|pr| {
+        let rows = visible.iter().map(|&i| {
+            let pr = &self.prs[i];
             Row::new([
                 Cell::from(format!("#{}", pr.id)),
                 Cell::from(sanitize(pr.title.as_deref().unwrap_or_default())),
@@ -1019,6 +1129,55 @@ impl App {
         frame.render_widget(Clear, area);
         frame.render_widget(help, area);
     }
+}
+
+/// Case-insensitive subsequence match (`query`'s chars appear in order in
+/// `haystack`). An empty query matches everything.
+fn fuzzy_match(haystack: &str, query_lower: &str) -> bool {
+    if query_lower.is_empty() {
+        return true;
+    }
+    let mut needles = query_lower.chars().peekable();
+    for h in haystack.to_lowercase().chars() {
+        match needles.peek() {
+            Some(&n) if n == h => {
+                needles.next();
+            }
+            Some(_) => {}
+            None => break,
+        }
+    }
+    needles.peek().is_none()
+}
+
+fn pr_haystack(pr: &PullRequest) -> String {
+    format!(
+        "{} {} {}",
+        pr.title.as_deref().unwrap_or(""),
+        pr.source.branch_name(),
+        pr.author.as_ref().map_or(String::new(), User::label),
+    )
+}
+
+fn issue_haystack(issue: &Issue) -> String {
+    format!(
+        "{} {} {}",
+        issue.title.as_deref().unwrap_or(""),
+        issue.kind.as_deref().unwrap_or(""),
+        issue.priority.as_deref().unwrap_or(""),
+    )
+}
+
+fn pipeline_haystack(p: &Pipeline) -> String {
+    format!(
+        "{} {} {}",
+        p.build_number.map_or(String::new(), |n| n.to_string()),
+        p.state_name(),
+        p.target
+            .as_ref()
+            .and_then(|t| t.ref_name.as_deref())
+            .unwrap_or(""),
+    )
 }
 
 /// A PR/CI state rendered as a colored span.
@@ -1458,6 +1617,38 @@ mod tests {
         let text = buffer_text(terminal.backend());
         assert!(text.contains("Pipeline #1"), "buffer: {text}");
         assert!(text.contains("Build"), "buffer: {text}");
+    }
+
+    #[test]
+    fn fuzzy_filter_narrows_and_clears() {
+        let mut app = App::new(true);
+        // Three PRs: "PR 1" (feat/1), "PR 2" (feat/2), "PR 3" (feat/3).
+        app.apply_response(Response::Prs(prs(3)));
+        app.update(Msg::StartFilter);
+        assert_eq!(app.input_context(), InputContext::Filter);
+        // Type "2" → only "PR 2" / "feat/2" matches.
+        app.update(Msg::FilterChar('2'));
+        assert_eq!(app.active_len(), 1);
+        assert_eq!(app.selected_pr_id(), Some(2));
+        // Clearing restores all rows.
+        app.update(Msg::ClearFilter);
+        assert!(!app.filtering);
+        assert_eq!(app.active_len(), 3);
+    }
+
+    #[test]
+    fn fuzzy_filter_subsequence_and_no_matches() {
+        assert!(fuzzy_match("Fix the parser", "fxp")); // subsequence
+        assert!(!fuzzy_match("Fix the parser", "zzz"));
+        let mut app = App::new(true);
+        app.apply_response(Response::Prs(prs(2)));
+        app.update(Msg::StartFilter);
+        app.update(Msg::FilterChar('z')); // matches nothing
+        assert_eq!(app.active_len(), 0);
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.view(f)).unwrap();
+        assert!(buffer_text(terminal.backend()).contains("No matches"));
     }
 
     #[test]
