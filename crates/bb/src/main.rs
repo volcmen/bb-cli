@@ -23,11 +23,47 @@ use std::process::ExitCode;
 use crate::core::{ApiError, AuthError, CancelError, ExitCode as Bb, FlagError, SilentError};
 
 fn main() -> ExitCode {
-    // `clap` auto-handles `--version`, `--help`, and parse errors (exit 2).
-    let cli = cli::parse();
-    match cli::dispatch(cli) {
-        Ok(()) => ExitCode::from(Bb::Ok.as_u8()),
-        Err(err) => ExitCode::from(classify(&err).as_u8()),
+    let argv: Vec<String> = std::env::args().collect();
+
+    // Expand a leading user alias before clap sees the args (best-effort: a
+    // config load failure just means no aliases).
+    let aliases = config::load()
+        .ok()
+        .map(|c| crate::commands::alias::load_aliases(c.as_ref()))
+        .unwrap_or_default();
+    match crate::commands::alias::expand(&argv, &cli::builtin_names(), &aliases) {
+        crate::commands::alias::Expanded::Shell(line) => run_shell_alias(&line),
+        crate::commands::alias::Expanded::Clap(args) => {
+            // `clap` auto-handles `--version`, `--help`, and parse errors (exit 2).
+            let cli = cli::parse_from(args);
+            match cli::dispatch(cli) {
+                Ok(()) => ExitCode::from(Bb::Ok.as_u8()),
+                Err(err) => ExitCode::from(classify(&err).as_u8()),
+            }
+        }
+    }
+}
+
+/// Execute a `!`-shell alias through the platform shell, propagating its exit code.
+fn run_shell_alias(line: &str) -> ExitCode {
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = std::process::Command::new("cmd");
+        c.arg("/C");
+        c
+    };
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let mut c = std::process::Command::new("sh");
+        c.arg("-c");
+        c
+    };
+    match cmd.arg(line).status() {
+        Ok(status) => ExitCode::from(u8::try_from(status.code().unwrap_or(1)).unwrap_or(1)),
+        Err(e) => {
+            eprintln!("error: failed to run shell alias: {e}");
+            ExitCode::from(Bb::Error.as_u8())
+        }
     }
 }
 
