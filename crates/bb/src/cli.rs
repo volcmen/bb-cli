@@ -5,8 +5,9 @@ use crate::core::{FlagError, RepoId};
 use clap::{CommandFactory, Parser, Subcommand};
 
 use crate::commands::{
-    api::ApiArgs, auth::AuthArgs, browse::BrowseArgs, completion::CompletionArgs, issue::IssueArgs,
-    man::ManArgs, pipeline::PipelineArgs, pr::PrArgs, repo::RepoArgs,
+    api::ApiArgs, auth::AuthArgs, browse::BrowseArgs, completion::CompletionArgs,
+    config::ConfigArgs, issue::IssueArgs, man::ManArgs, pipeline::PipelineArgs, pr::PrArgs,
+    repo::RepoArgs,
 };
 use crate::factory;
 
@@ -63,6 +64,8 @@ enum Commands {
     Completion(CompletionArgs),
     /// Generate man pages for bb and its subcommands
     Man(ManArgs),
+    /// Get or set local configuration
+    Config(ConfigArgs),
 }
 
 /// Parse process arguments (auto-exits on `--version`/`--help`/parse errors).
@@ -121,6 +124,10 @@ pub fn dispatch(cli: Cli) -> anyhow::Result<()> {
         Some(Commands::Man(args)) => {
             let ctx = factory::build_context(repo_override)?;
             crate::commands::man::run(&ctx, args)
+        }
+        Some(Commands::Config(args)) => {
+            let ctx = factory::build_context(repo_override)?;
+            crate::commands::config::run(&ctx, args)
         }
 
         None => {
