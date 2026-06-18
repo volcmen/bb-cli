@@ -4,6 +4,7 @@ mod comment;
 mod create;
 mod edit;
 mod list;
+pub(crate) mod query;
 mod view;
 
 use crate::core::{Context, FlagError, RepoId};

@@ -9,8 +9,9 @@
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 
-use crate::api::models::{CommitStatus, PullRequest};
+use crate::api::models::{CommitStatus, Issue, PullRequest};
 use crate::api::BitbucketClient;
+use crate::commands::issue::query::{self as iquery, IssueFilter};
 use crate::commands::pr::query::PrFilter;
 use crate::commands::pr::{actions, query};
 use crate::core::{RepoId, Transport};
@@ -22,6 +23,8 @@ use std::sync::Arc;
 pub enum RequestKind {
     Prs,
     PrDetail,
+    Issues,
+    IssueDetail,
     Action,
 }
 
@@ -42,6 +45,10 @@ pub enum Request {
     Decline(u64),
     /// Comment on a pull request.
     Comment(u64, String),
+    /// Fetch the issue list for a filter.
+    Issues(IssueFilter),
+    /// Fetch one issue (the detail pane).
+    IssueDetail(u64),
 }
 
 /// A result delivered back to the UI thread.
@@ -53,6 +60,10 @@ pub enum Response {
         pr: Box<PullRequest>,
         checks: Vec<CommitStatus>,
     },
+    Issues(Vec<Issue>),
+    IssueDetail(Box<Issue>),
+    /// The repo's issue tracker is disabled (404/410 on `/issues`).
+    IssuesDisabled,
     /// A mutation succeeded — carries a success toast (the UI auto-refreshes).
     ActionDone(String),
     /// A human-facing error message + the request kind it belongs to.
@@ -153,6 +164,16 @@ fn handle_request(client: &BitbucketClient, repo: &RepoId, request: Request) -> 
             actions::comment(client, repo, id, &body).map(|_| ()),
             format!("✓ Commented on PR #{id}"),
         ),
+        Request::Issues(filter) => match iquery::list(client, repo, &filter) {
+            Ok(issues) => Response::Issues(issues),
+            Err(e) if e.is_gone() || e.is_not_found() => Response::IssuesDisabled,
+            Err(e) => Response::Error(format!("{e}"), RequestKind::Issues),
+        },
+        Request::IssueDetail(id) => match iquery::get(client, repo, id) {
+            Ok(issue) => Response::IssueDetail(Box::new(issue)),
+            Err(e) if e.is_gone() || e.is_not_found() => Response::IssuesDisabled,
+            Err(e) => Response::Error(format!("{e}"), RequestKind::IssueDetail),
+        },
     }
 }
 
@@ -246,6 +267,46 @@ mod tests {
             Response::ActionDone(msg) => assert!(msg.contains("Approved"), "msg: {msg}"),
             other => panic!("expected ActionDone, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn request_issues_yields_response_issues() {
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "issues",
+            FakeTransport::rest(Method::Get, "/issues?sort"),
+            FakeTransport::json(200, r#"{"values":[{"id":3,"title":"Bug","state":"new"}]}"#),
+        );
+        let transport: Arc<dyn Transport> = h;
+        let worker = Worker::spawn(transport, None, RepoId::new("acme", "widgets"));
+        worker.send(Request::Issues(IssueFilter {
+            state: None,
+            limit: 30,
+        }));
+        match worker.rx.recv().unwrap() {
+            Response::Issues(issues) => assert_eq!(issues[0].id, 3),
+            other => panic!("expected Issues, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn disabled_tracker_yields_issues_disabled() {
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "issues gone",
+            FakeTransport::rest(Method::Get, "/issues?sort"),
+            FakeTransport::json(410, r#"{"error":{"message":"gone"}}"#),
+        );
+        let transport: Arc<dyn Transport> = h;
+        let worker = Worker::spawn(transport, None, RepoId::new("acme", "widgets"));
+        worker.send(Request::Issues(IssueFilter {
+            state: None,
+            limit: 30,
+        }));
+        assert!(matches!(
+            worker.rx.recv().unwrap(),
+            Response::IssuesDisabled
+        ));
     }
 
     #[test]

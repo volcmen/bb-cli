@@ -15,10 +15,11 @@ use std::time::Duration;
 
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 
+use crate::commands::issue::query::IssueFilter;
 use crate::commands::pr::query::PrFilter;
 use crate::core::{Browser, RepoId, Transport};
 
-use app::{App, Msg, PendingAction};
+use app::{App, Msg, PendingAction, Tab};
 use worker::{Request, RequestKind, Worker};
 
 /// How often the loop wakes to advance the spinner when no input arrives.
@@ -48,6 +49,10 @@ pub fn run(
         base: None,
         limit: 30,
     };
+    let issue_filter = IssueFilter {
+        state: None,
+        limit: 30,
+    };
 
     let worker = match (authed, repo) {
         (true, Some(repo)) => {
@@ -71,12 +76,27 @@ pub fn run(
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
                     if let Some(msg) = keymap::map_key(key, app.input_context()) {
-                        dispatch(&mut app, worker.as_ref(), &pr_filter, &browser, msg);
+                        dispatch(
+                            &mut app,
+                            worker.as_ref(),
+                            &pr_filter,
+                            &issue_filter,
+                            &browser,
+                            msg,
+                        );
                     }
                 }
             }
         } else {
             app.update(Msg::Tick);
+        }
+
+        // Lazily load the Issues section the first time it's shown.
+        if app.needs_issue_load() {
+            if let Some(worker) = &worker {
+                app.begin(RequestKind::Issues);
+                worker.send(Request::Issues(issue_filter.clone()));
+            }
         }
 
         // Drain any worker responses without blocking. A completed mutation
@@ -107,6 +127,7 @@ fn dispatch(
     app: &mut App,
     worker: Option<&Worker>,
     pr_filter: &PrFilter,
+    issue_filter: &IssueFilter,
     browser: &Arc<dyn Browser>,
     msg: Msg,
 ) {
@@ -115,18 +136,36 @@ fn dispatch(
     match msg {
         Msg::Refresh => {
             if let Some(worker) = worker {
-                app.begin(RequestKind::Prs);
-                worker.send(Request::Prs(pr_filter.clone()));
-            }
-        }
-        Msg::Open => {
-            if let Some(id) = app.selected_pr_id() {
-                app.update(Msg::Open);
-                if let Some(worker) = worker {
-                    worker.send(Request::PrDetail(id));
+                match app.active_tab {
+                    Tab::Issues => {
+                        app.begin(RequestKind::Issues);
+                        worker.send(Request::Issues(issue_filter.clone()));
+                    }
+                    _ => {
+                        app.begin(RequestKind::Prs);
+                        worker.send(Request::Prs(pr_filter.clone()));
+                    }
                 }
             }
         }
+        Msg::Open => match app.active_tab {
+            Tab::Issues => {
+                if let Some(id) = app.selected_issue_id() {
+                    app.update(Msg::Open);
+                    if let Some(worker) = worker {
+                        worker.send(Request::IssueDetail(id));
+                    }
+                }
+            }
+            _ => {
+                if let Some(id) = app.selected_pr_id() {
+                    app.update(Msg::Open);
+                    if let Some(worker) = worker {
+                        worker.send(Request::PrDetail(id));
+                    }
+                }
+            }
+        },
         Msg::OpenBrowser => {
             if let Some(url) = app.current_url() {
                 let _ = browser.browse(url);
