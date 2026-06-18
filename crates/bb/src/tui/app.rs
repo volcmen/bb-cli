@@ -277,7 +277,7 @@ impl App {
     }
 
     /// The highlighted PR, mapped through the visible filter (PR section only).
-    fn active_pr(&self) -> Option<&PullRequest> {
+    pub(crate) fn active_pr(&self) -> Option<&PullRequest> {
         if self.active_tab != Tab::PullRequests {
             return None;
         }
@@ -286,7 +286,7 @@ impl App {
             .and_then(|&i| self.prs.get(i))
     }
 
-    fn active_issue(&self) -> Option<&Issue> {
+    pub(crate) fn active_issue(&self) -> Option<&Issue> {
         if self.active_tab != Tab::Issues {
             return None;
         }
@@ -295,7 +295,7 @@ impl App {
             .and_then(|&i| self.issues.get(i))
     }
 
-    fn active_pipeline(&self) -> Option<&Pipeline> {
+    pub(crate) fn active_pipeline(&self) -> Option<&Pipeline> {
         if self.active_tab != Tab::Pipelines {
             return None;
         }

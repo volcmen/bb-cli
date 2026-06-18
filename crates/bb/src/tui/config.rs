@@ -11,6 +11,45 @@ use ratatui::style::Color;
 use super::app::Tab;
 use crate::core::ConfigProvider;
 
+/// A user-defined key that runs a templated external command (#90).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CustomKey {
+    pub key: char,
+    pub name: String,
+    pub command: String,
+    /// Which section it applies to (`None` = all).
+    pub context: Option<Tab>,
+}
+
+impl CustomKey {
+    /// Whether this binding is active on `tab`.
+    #[must_use]
+    pub fn applies(&self, tab: Tab) -> bool {
+        self.context.map_or(true, |c| c == tab)
+    }
+}
+
+/// The JSON shape stored under the `dash_custom_keys` config key.
+#[derive(serde::Deserialize)]
+struct RawCustomKey {
+    key: String,
+    name: String,
+    command: String,
+    #[serde(default)]
+    context: Option<String>,
+}
+
+/// Expand `{{id}}`/`{{url}}`/`{{branch}}`/`{{repo}}`/`{{workspace}}`/`{{slug}}`
+/// (and any provided var) in `template` from `vars`.
+#[must_use]
+pub fn expand_template(template: &str, vars: &[(&str, String)]) -> String {
+    let mut out = template.to_owned();
+    for (name, value) in vars {
+        out = out.replace(&format!("{{{{{name}}}}}"), value);
+    }
+    out
+}
+
 /// Colors for PR/CI states (named → [`Color`]). All optional, with sane defaults.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Theme {
@@ -53,6 +92,7 @@ pub struct DashConfig {
     pub default_tab: Tab,
     pub refresh_secs: u64,
     pub theme: Theme,
+    pub custom_keys: Vec<CustomKey>,
 }
 
 impl Default for DashConfig {
@@ -61,6 +101,7 @@ impl Default for DashConfig {
             default_tab: Tab::PullRequests,
             refresh_secs: 5,
             theme: Theme::default(),
+            custom_keys: Vec::new(),
         }
     }
 }
@@ -102,6 +143,44 @@ impl DashConfig {
         color("dash_theme_state_merged", &mut cfg.theme.merged);
         color("dash_theme_state_failed", &mut cfg.theme.failed);
         color("dash_theme_state_in_progress", &mut cfg.theme.in_progress);
+
+        if let Some(raw) = get("dash_custom_keys") {
+            match serde_json::from_str::<Vec<RawCustomKey>>(&raw) {
+                Ok(entries) => {
+                    for e in entries {
+                        let Some(key) = e.key.chars().next().filter(|_| e.key.chars().count() == 1)
+                        else {
+                            warnings.push(format!("custom key {:?}: must be a single char", e.key));
+                            continue;
+                        };
+                        if super::keymap::is_reserved(key) {
+                            warnings.push(format!(
+                                "custom key '{key}' collides with a built-in binding; ignored"
+                            ));
+                            continue;
+                        }
+                        let context = match e.context.as_deref() {
+                            None => None,
+                            Some("pr") => Some(Tab::PullRequests),
+                            Some("issue") => Some(Tab::Issues),
+                            Some("pipeline") => Some(Tab::Pipelines),
+                            Some(other) => {
+                                warnings
+                                    .push(format!("custom key '{key}': unknown context {other:?}"));
+                                continue;
+                            }
+                        };
+                        cfg.custom_keys.push(CustomKey {
+                            key,
+                            name: e.name,
+                            command: e.command,
+                            context,
+                        });
+                    }
+                }
+                Err(e) => warnings.push(format!("dash_custom_keys: invalid JSON ({e})")),
+            }
+        }
 
         (cfg, warnings)
     }
@@ -168,6 +247,70 @@ mod tests {
         assert_eq!(dash.refresh_secs, 5);
         assert_eq!(dash.theme.failed, Color::Red);
         assert_eq!(warnings.len(), 3, "warnings: {warnings:?}");
+    }
+
+    #[test]
+    fn custom_keys_parse_and_reject_collisions() {
+        let cfg = FileConfig::blank();
+        cfg.set(
+            "",
+            "dash_custom_keys",
+            r#"[
+                {"key":"v","name":"editor","command":"$EDITOR {{branch}}","context":"pr"},
+                {"key":"m","name":"bad","command":"x"},
+                {"key":"L","name":"lazygit","command":"lazygit"}
+            ]"#,
+        )
+        .unwrap();
+        let (dash, warnings) = DashConfig::load(&cfg);
+        // 'v' and 'L' register; 'm' collides with the built-in merge binding.
+        assert_eq!(dash.custom_keys.len(), 2);
+        assert_eq!(dash.custom_keys[0].key, 'v');
+        assert_eq!(dash.custom_keys[0].context, Some(Tab::PullRequests));
+        assert_eq!(dash.custom_keys[1].key, 'L');
+        assert!(dash.custom_keys[1].context.is_none());
+        assert_eq!(warnings.len(), 1, "warnings: {warnings:?}");
+        assert!(warnings[0].contains("collides"));
+    }
+
+    #[test]
+    fn custom_keys_invalid_json_warns() {
+        let cfg = FileConfig::blank();
+        cfg.set("", "dash_custom_keys", "not json").unwrap();
+        let (dash, warnings) = DashConfig::load(&cfg);
+        assert!(dash.custom_keys.is_empty());
+        assert_eq!(warnings.len(), 1);
+    }
+
+    #[test]
+    fn expand_template_fills_vars() {
+        let out = expand_template(
+            "$EDITOR {{branch}} # {{repo}}#{{id}} {{url}}",
+            &[
+                ("branch", "feat/x".to_owned()),
+                ("repo", "acme/widgets".to_owned()),
+                ("id", "7".to_owned()),
+                ("url", "https://bb/7".to_owned()),
+            ],
+        );
+        assert_eq!(out, "$EDITOR feat/x # acme/widgets#7 https://bb/7");
+    }
+
+    #[test]
+    fn custom_key_applies_respects_context() {
+        let ck = CustomKey {
+            key: 'v',
+            name: "x".to_owned(),
+            command: "x".to_owned(),
+            context: Some(Tab::Issues),
+        };
+        assert!(ck.applies(Tab::Issues));
+        assert!(!ck.applies(Tab::PullRequests));
+        let any = CustomKey {
+            context: None,
+            ..ck
+        };
+        assert!(any.applies(Tab::Pipelines));
     }
 
     #[test]

@@ -20,6 +20,34 @@ pub fn map_key(key: KeyEvent, ctx: InputContext) -> Option<Msg> {
     }
 }
 
+/// Single-char keys bound by the built-in normal grammar — a custom keybinding
+/// (#90) is rejected if it collides with one of these (built-ins win).
+#[must_use]
+pub fn is_reserved(c: char) -> bool {
+    matches!(
+        c,
+        'q' | 'c'
+            | '?'
+            | '1'
+            | '2'
+            | '3'
+            | 'j'
+            | 'k'
+            | 'g'
+            | 'G'
+            | 'd'
+            | 'u'
+            | 'r'
+            | '/'
+            | 'l'
+            | 'o'
+            | 'a'
+            | 'm'
+            | 'x'
+            | 'C'
+    )
+}
+
 /// The normal-context bindings as `(keys, description)` for the `?` help overlay,
 /// kept beside [`normal_key`] so the two never drift.
 #[must_use]

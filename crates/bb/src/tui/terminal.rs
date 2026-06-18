@@ -33,6 +33,27 @@ impl TerminalGuard {
         let terminal = Terminal::new(CrosstermBackend::new(stdout))?;
         Ok(Self { terminal })
     }
+
+    /// Drop back to the normal screen so an external command (#90) can use the
+    /// terminal. Pair with [`TerminalGuard::resume`].
+    ///
+    /// # Errors
+    /// Propagates the terminal-restore [`io::Error`].
+    pub fn suspend(&mut self) -> io::Result<()> {
+        restore()
+    }
+
+    /// Re-enter the alternate screen + raw mode after a suspended command and
+    /// force a full redraw.
+    ///
+    /// # Errors
+    /// Propagates the raw-mode / alternate-screen [`io::Error`].
+    pub fn resume(&mut self) -> io::Result<()> {
+        enable_raw_mode()?;
+        execute!(io::stdout(), EnterAlternateScreen)?;
+        self.terminal.clear()?;
+        Ok(())
+    }
 }
 
 impl Drop for TerminalGuard {
