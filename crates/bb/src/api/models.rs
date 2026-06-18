@@ -323,6 +323,33 @@ impl PullRequest {
     }
 }
 
+/// A Bitbucket workspace.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Workspace {
+    pub slug: Option<String>,
+    pub name: Option<String>,
+    pub uuid: Option<String>,
+    pub is_private: Option<bool>,
+}
+
+/// A workspace membership for the current user
+/// (`GET /2.0/user/permissions/workspaces` → `{ permission, workspace }`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkspaceMembership {
+    pub permission: Option<String>,
+    pub workspace: Option<Workspace>,
+}
+
+/// A Bitbucket project within a workspace.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Project {
+    pub key: Option<String>,
+    pub name: Option<String>,
+    pub is_private: Option<bool>,
+    pub description: Option<String>,
+    pub links: Option<RepoLinks>,
+}
+
 /// A Bitbucket Snippet (the `gh gist` analog).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Snippet {

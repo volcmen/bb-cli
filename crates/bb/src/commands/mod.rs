@@ -17,3 +17,4 @@ pub mod search;
 pub mod snippet;
 pub mod ssh_key;
 pub mod variable;
+pub mod workspace;
