@@ -1,6 +1,7 @@
 //! `bb pipeline` — CI pipeline commands.
 
 mod list;
+mod run;
 mod view;
 
 use crate::core::Context;
@@ -18,6 +19,10 @@ enum PipelineCommands {
     List(list::ListArgs),
     /// View a pipeline (by build number)
     View(view::ViewArgs),
+    /// Trigger a pipeline run
+    Run(run::RunArgs),
+    /// Stop a running pipeline
+    Stop(run::StopArgs),
 }
 
 /// Dispatch `bb pipeline <sub>`.
@@ -28,5 +33,7 @@ pub fn run(ctx: &Context, args: PipelineArgs) -> anyhow::Result<()> {
     match args.command {
         PipelineCommands::List(a) => list::run(ctx, a),
         PipelineCommands::View(a) => view::run(ctx, a),
+        PipelineCommands::Run(a) => run::run(ctx, a),
+        PipelineCommands::Stop(a) => run::run_stop(ctx, a),
     }
 }
