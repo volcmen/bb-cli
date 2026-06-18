@@ -17,8 +17,11 @@ pub fn run(ctx: &Context, _args: DashArgs) -> anyhow::Result<()> {
         return Err(FlagError::new("bb dash requires an interactive terminal").into());
     }
     let host = ctx.host();
-    let authed = crate::auth::header_for(ctx.config.as_ref(), &host).is_some();
-    crate::tui::run(authed)
+    let header = crate::auth::header_for(ctx.config.as_ref(), &host);
+    let authed = header.is_some();
+    // The repo is best-effort: dash still opens (with a hint) when none resolves.
+    let repo = ctx.base_repo().ok();
+    crate::tui::run(authed, repo, ctx.transport.clone(), header)
 }
 
 #[cfg(test)]
