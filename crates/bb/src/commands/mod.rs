@@ -14,5 +14,6 @@ pub mod pipeline;
 pub mod pr;
 pub mod repo;
 pub mod search;
+pub mod snippet;
 pub mod ssh_key;
 pub mod variable;
