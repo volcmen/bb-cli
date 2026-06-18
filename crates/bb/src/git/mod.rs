@@ -140,6 +140,15 @@ impl GitClient for ShellGit {
         }
         self.run(&args).map(|_| ())
     }
+
+    fn config_set_global(&self, key: &str, value: &str) -> Result<(), GitError> {
+        self.run(&["config", "--global", key, value]).map(|_| ())
+    }
+
+    fn config_add_global(&self, key: &str, value: &str) -> Result<(), GitError> {
+        self.run(&["config", "--global", "--add", key, value])
+            .map(|_| ())
+    }
 }
 
 #[cfg(test)]
