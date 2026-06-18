@@ -1,14 +1,18 @@
 //! `bb repo` — repository commands.
 
+mod branch_restriction;
 mod clone;
 mod create;
+mod default_reviewer;
 mod delete;
+mod deploy_key;
 mod edit;
 mod fork;
 mod list;
 mod set_default;
 mod sync;
 mod view;
+mod webhook;
 
 use crate::core::Context;
 use clap::{Args, Subcommand};
@@ -41,6 +45,14 @@ enum RepoCommands {
     SetDefault(set_default::SetDefaultArgs),
     /// Sync a fork's current branch with its upstream
     Sync(sync::SyncArgs),
+    /// Manage repository webhooks
+    Webhook(webhook::WebhookArgs),
+    /// Manage repository deploy keys
+    DeployKey(deploy_key::DeployKeyArgs),
+    /// Manage branch restrictions (branch protection)
+    BranchRestriction(branch_restriction::BranchRestrictionArgs),
+    /// Manage default reviewers
+    DefaultReviewer(default_reviewer::DefaultReviewerArgs),
 }
 
 /// Dispatch `bb repo <sub>`.
@@ -59,5 +71,9 @@ pub fn run(ctx: &Context, args: RepoArgs) -> anyhow::Result<()> {
         RepoCommands::List(a) => list::run(ctx, a),
         RepoCommands::SetDefault(a) => set_default::run(ctx, a),
         RepoCommands::Sync(a) => sync::run(ctx, a),
+        RepoCommands::Webhook(a) => webhook::run(ctx, a),
+        RepoCommands::DeployKey(a) => deploy_key::run(ctx, a),
+        RepoCommands::BranchRestriction(a) => branch_restriction::run(ctx, a),
+        RepoCommands::DefaultReviewer(a) => default_reviewer::run(ctx, a),
     }
 }
