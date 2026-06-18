@@ -27,6 +27,28 @@ pub struct ApiArgs {
     /// Follow pagination, concatenating each page's `values` into one array
     #[arg(long)]
     pub paginate: bool,
+    /// Filter the JSON response with a jq `expression`
+    #[arg(short = 'q', long, value_name = "EXPRESSION")]
+    pub jq: Option<String>,
+    /// Format the JSON response with a `template`
+    #[arg(long, value_name = "TEMPLATE")]
+    pub template: Option<String>,
+}
+
+impl ApiArgs {
+    /// The output filter (jq/template) as a [`JsonFlags`], or `None` when neither
+    /// is set. `bb api` has no `--json <fields>`, so the field list is empty and
+    /// the filter operates on the full response.
+    fn output_filter(&self) -> Option<crate::output::JsonFlags> {
+        if self.jq.is_none() && self.template.is_none() {
+            return None;
+        }
+        Some(crate::output::JsonFlags {
+            json: Vec::new(),
+            jq: self.jq.clone(),
+            template: self.template.clone(),
+        })
+    }
 }
 
 /// Run `bb api`.
@@ -52,21 +74,37 @@ pub fn run(ctx: &Context, args: ApiArgs) -> anyhow::Result<()> {
         if body.is_some() {
             return Err(FlagError::new("--paginate cannot be combined with -f/-F fields").into());
         }
-        return run_paginate(ctx, &client, &args.path);
+        return run_paginate(ctx, &client, &args.path, args.output_filter().as_ref());
     }
 
     let resp = client.execute_raw(method, &args.path, body)?;
-
-    // Pretty-print the body as JSON, falling back to the raw text.
-    match serde_json::from_slice::<Value>(&resp.body) {
-        Ok(value) => ctx.io.println(
-            &serde_json::to_string_pretty(&value).unwrap_or_else(|_| resp.body_str().into_owned()),
-        ),
-        Err(_) => ctx.io.println(&resp.body_str()),
-    }
+    emit_response(ctx, &resp.body, args.output_filter().as_ref())?;
 
     if resp.status >= 400 {
         return Err(SilentError.into());
+    }
+    Ok(())
+}
+
+/// Render a response body to stdout. With a jq/template `filter`, parse the body
+/// as JSON and emit through it; otherwise pretty-print JSON (or print raw text).
+fn emit_response(
+    ctx: &Context,
+    body: &[u8],
+    filter: Option<&crate::output::JsonFlags>,
+) -> anyhow::Result<()> {
+    if let Some(filter) = filter {
+        let value: Value = serde_json::from_slice(body)
+            .map_err(|e| FlagError::new(format!("response is not JSON: {e}")))?;
+        return filter.emit(&ctx.io, value);
+    }
+    // Pretty-print the body as JSON, falling back to the raw text.
+    match serde_json::from_slice::<Value>(body) {
+        Ok(value) => ctx.io.println(
+            &serde_json::to_string_pretty(&value)
+                .unwrap_or_else(|_| String::from_utf8_lossy(body).into_owned()),
+        ),
+        Err(_) => ctx.io.println(&String::from_utf8_lossy(body)),
     }
     Ok(())
 }
@@ -77,6 +115,7 @@ fn run_paginate(
     ctx: &Context,
     client: &crate::api::BitbucketClient,
     path: &str,
+    filter: Option<&crate::output::JsonFlags>,
 ) -> anyhow::Result<()> {
     let mut all: Vec<Value> = Vec::new();
     // The first request uses the (possibly relative) `path`; subsequent ones use
@@ -88,6 +127,9 @@ fn run_paginate(
         next = collect_page(&resp.body, &mut all)?;
     }
     let combined = Value::Array(all);
+    if let Some(filter) = filter {
+        return filter.emit(&ctx.io, combined);
+    }
     ctx.io
         .println(&serde_json::to_string_pretty(&combined).unwrap_or_else(|_| combined.to_string()));
     Ok(())
@@ -203,6 +245,8 @@ mod tests {
             fields: Vec::new(),
             typed: Vec::new(),
             paginate: false,
+            jq: None,
+            template: None,
         }
     }
 
@@ -223,6 +267,8 @@ mod tests {
             fields: raw.into_iter().map(str::to_owned).collect(),
             typed: typed.into_iter().map(str::to_owned).collect(),
             paginate: false,
+            jq: None,
+            template: None,
         }
     }
 
@@ -360,6 +406,8 @@ mod tests {
             fields: vec!["a=b".to_owned(), "c=d".to_owned()],
             typed: Vec::new(),
             paginate: false,
+            jq: None,
+            template: None,
         };
         run(&ctx, args).unwrap();
 
@@ -444,6 +492,8 @@ mod tests {
             fields: vec!["novalue".to_owned()],
             typed: Vec::new(),
             paginate: false,
+            jq: None,
+            template: None,
         };
         let err = run(&ctx, args).unwrap_err();
         assert!(
@@ -487,5 +537,110 @@ mod tests {
             "expected FlagError, got: {err:?}"
         );
         assert_eq!(h.request_count(), 0);
+    }
+
+    #[test]
+    fn api_jq_filters_response() {
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "jq",
+            FakeTransport::rest(Method::Get, "/2.0/user"),
+            FakeTransport::json(200, r#"{"username":"davidd","display_name":"David D"}"#),
+        );
+        let transport: Arc<dyn Transport> = h.clone();
+        let (ctx, bufs) = test_context(
+            transport,
+            git(),
+            config(),
+            Arc::new(ScriptedPrompter::new()),
+            false,
+        );
+        let args = ApiArgs {
+            jq: Some(".username".to_owned()),
+            ..api_args("/user")
+        };
+        run(&ctx, args).unwrap();
+        assert_eq!(bufs.stdout_string(), "\"davidd\"\n");
+    }
+
+    #[test]
+    fn api_template_renders_response() {
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "tmpl",
+            FakeTransport::rest(Method::Get, "/2.0/user"),
+            FakeTransport::json(200, r#"{"username":"davidd"}"#),
+        );
+        let transport: Arc<dyn Transport> = h.clone();
+        let (ctx, bufs) = test_context(
+            transport,
+            git(),
+            config(),
+            Arc::new(ScriptedPrompter::new()),
+            false,
+        );
+        let args = ApiArgs {
+            template: Some("{username}".to_owned()),
+            ..api_args("/user")
+        };
+        run(&ctx, args).unwrap();
+        assert_eq!(bufs.stdout_string().trim_end(), "davidd");
+    }
+
+    #[test]
+    fn api_jq_on_paginate() {
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "page 1",
+            FakeTransport::rest(Method::Get, "/2.0/items"),
+            FakeTransport::json(
+                200,
+                r#"{"values":[{"id":1},{"id":2}],"next":"https://api.bitbucket.org/2.0/items?page=2"}"#,
+            ),
+        );
+        h.stub(
+            "page 2",
+            FakeTransport::rest(Method::Get, "items?page=2"),
+            FakeTransport::json(200, r#"{"values":[{"id":3}]}"#),
+        );
+        let transport: Arc<dyn Transport> = h.clone();
+        let (ctx, bufs) = test_context(
+            transport,
+            git(),
+            config(),
+            Arc::new(ScriptedPrompter::new()),
+            false,
+        );
+        let args = ApiArgs {
+            paginate: true,
+            jq: Some(".[].id".to_owned()),
+            ..api_args("/items")
+        };
+        run(&ctx, args).unwrap();
+        assert_eq!(bufs.stdout_string(), "1\n2\n3\n");
+    }
+
+    #[test]
+    fn api_jq_non_json_body_is_flag_error() {
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "non json",
+            FakeTransport::rest(Method::Get, "/2.0/raw"),
+            FakeTransport::json(200, "this is not json"),
+        );
+        let transport: Arc<dyn Transport> = h.clone();
+        let (ctx, _b) = test_context(
+            transport,
+            git(),
+            config(),
+            Arc::new(ScriptedPrompter::new()),
+            false,
+        );
+        let args = ApiArgs {
+            jq: Some(".".to_owned()),
+            ..api_args("/raw")
+        };
+        let err = run(&ctx, args).unwrap_err();
+        assert!(err.downcast_ref::<FlagError>().is_some(), "got: {err:?}");
     }
 }
