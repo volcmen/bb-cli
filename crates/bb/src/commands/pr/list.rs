@@ -235,11 +235,13 @@ mod tests {
 
         let reqs = h.requests.lock().unwrap();
         let url = &reqs[0].url;
-        let expected_q =
-            percent_encode(r#"state="OPEN" AND destination.branch.name="main""#);
+        let expected_q = percent_encode(r#"state="OPEN" AND destination.branch.name="main""#);
         assert!(url.contains(&format!("q={expected_q}")), "url: {url}");
         // The standalone, server-ignored `state=` param must be gone.
-        assert!(!url.contains("&state="), "url should not carry &state=: {url}");
+        assert!(
+            !url.contains("&state="),
+            "url should not carry &state=: {url}"
+        );
     }
 
     #[test]
