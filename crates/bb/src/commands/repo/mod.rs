@@ -2,6 +2,7 @@
 
 mod clone;
 mod create;
+mod delete;
 mod edit;
 mod fork;
 mod list;
@@ -30,6 +31,8 @@ enum RepoCommands {
     Edit(edit::EditArgs),
     /// Rename a repository
     Rename(edit::RenameArgs),
+    /// Delete a repository
+    Delete(delete::DeleteArgs),
     /// List repositories in a workspace
     List(list::ListArgs),
 }
@@ -46,6 +49,7 @@ pub fn run(ctx: &Context, args: RepoArgs) -> anyhow::Result<()> {
         RepoCommands::Fork(a) => fork::run(ctx, a),
         RepoCommands::Edit(a) => edit::run(ctx, a),
         RepoCommands::Rename(a) => edit::run_rename(ctx, a),
+        RepoCommands::Delete(a) => delete::run(ctx, a),
         RepoCommands::List(a) => list::run(ctx, a),
     }
 }
