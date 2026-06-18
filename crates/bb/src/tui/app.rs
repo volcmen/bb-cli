@@ -4,7 +4,7 @@
 //! it is exercised with `ratatui::backend::TestBackend` in tests.
 
 use ratatui::layout::{Constraint, Layout};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
@@ -62,9 +62,15 @@ pub enum Msg {
     Bottom,
     HalfPageDown,
     HalfPageUp,
+    /// Re-fetch the active section (handled by the event loop, which owns the worker).
+    Refresh,
     /// Timer tick — advances the spinner (and later drives auto-refresh).
     Tick,
 }
+
+/// Rows moved by a half-page motion (`Ctrl-d`/`Ctrl-u`) until a real viewport
+/// height is threaded through.
+const HALF_PAGE: isize = 10;
 
 /// The dashboard state.
 #[derive(Debug, Clone)]
@@ -76,6 +82,8 @@ pub struct App {
     pub should_quit: bool,
     /// Loaded pull requests (populated by [`App::apply_response`]).
     pub prs: Vec<PullRequest>,
+    /// Index of the highlighted PR row.
+    pub selected: usize,
     /// In-flight request kinds (drives the spinner).
     pub loading: Vec<RequestKind>,
     /// Transient status/error toast.
@@ -92,10 +100,20 @@ impl App {
             modal: None,
             should_quit: false,
             prs: Vec::new(),
+            selected: 0,
             loading: Vec::new(),
             status: None,
             spinner: 0,
         }
+    }
+
+    /// Move the PR selection by `delta` rows, clamped to the loaded set.
+    fn move_selection(&mut self, delta: isize) {
+        if self.prs.is_empty() {
+            return;
+        }
+        let max = self.prs.len() as isize - 1;
+        self.selected = (self.selected as isize).saturating_add(delta).clamp(0, max) as usize;
     }
 
     /// Mark a request kind as in flight (UI sent a [`Request`](super::worker::Request)).
@@ -113,7 +131,13 @@ impl App {
     pub fn apply_response(&mut self, response: Response) {
         match response {
             Response::Prs(prs) => {
+                // Persist the selection across a refresh by PR id when possible.
+                let prev_id = self.prs.get(self.selected).map(|p| p.id);
                 self.prs = prs;
+                self.selected = prev_id
+                    .and_then(|id| self.prs.iter().position(|p| p.id == id))
+                    .unwrap_or(0)
+                    .min(self.prs.len().saturating_sub(1));
                 self.done(RequestKind::Prs);
             }
             Response::Error(message, kind) => {
@@ -163,9 +187,14 @@ impl App {
                     self.spinner = (self.spinner + 1) % SPINNER.len();
                 }
             }
-            // Motions are no-ops until a list view exists (036+); the bindings are
-            // wired now so the keymap grammar is stable.
-            Msg::Down | Msg::Up | Msg::Top | Msg::Bottom | Msg::HalfPageDown | Msg::HalfPageUp => {}
+            Msg::Down => self.move_selection(1),
+            Msg::Up => self.move_selection(-1),
+            Msg::Top => self.selected = 0,
+            Msg::Bottom => self.selected = self.prs.len().saturating_sub(1),
+            Msg::HalfPageDown => self.move_selection(HALF_PAGE),
+            Msg::HalfPageUp => self.move_selection(-HALF_PAGE),
+            // Refresh is acted on by the event loop (which owns the worker).
+            Msg::Refresh => {}
         }
     }
 
@@ -180,10 +209,10 @@ impl App {
         .split(frame.area());
 
         frame.render_widget(self.tab_bar(), chunks[0]);
-        frame.render_widget(self.body(), chunks[1]);
+        self.render_body(frame, chunks[1]);
         frame.render_widget(
             Paragraph::new(Line::from(Span::raw(
-                "j/k move · 1/2/3 sections · ? help · q quit",
+                "j/k move · g/G ends · r refresh · 1/2/3 sections · ? help · q quit",
             ))),
             chunks[2],
         );
@@ -207,23 +236,66 @@ impl App {
         Line::from(spans)
     }
 
-    fn body(&self) -> Paragraph<'static> {
+    fn render_body(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
         let block = Block::default()
             .borders(Borders::ALL)
             .title(self.active_tab.title());
-        let text = if !self.authed {
+
+        // The PR table is the one rich view so far; everything else is a centered
+        // message inside the same bordered block.
+        if self.authed
+            && self.status.is_none()
+            && !self.is_loading()
+            && self.active_tab == Tab::PullRequests
+            && !self.prs.is_empty()
+        {
+            self.render_pr_table(frame, area, block);
+            return;
+        }
+
+        let message = if !self.authed {
             "Not logged in — run `bb auth login`".to_owned()
         } else if let Some(status) = &self.status {
             format!("⚠ {status}")
         } else if self.is_loading() {
-            format!("{} Loading…", SPINNER[self.spinner])
+            format!("{} Loading pull requests…", SPINNER[self.spinner])
         } else {
             match self.active_tab {
-                Tab::PullRequests => format!("{} pull request(s)", self.prs.len()),
+                Tab::PullRequests => "No pull requests".to_owned(),
                 other => format!("{} — coming soon", other.title()),
             }
         };
-        Paragraph::new(text).block(block)
+        frame.render_widget(Paragraph::new(message).block(block), area);
+    }
+
+    fn render_pr_table(&self, frame: &mut Frame, area: ratatui::layout::Rect, block: Block) {
+        use crate::render::sanitize;
+        use ratatui::widgets::{Cell, HighlightSpacing, Row, Table, TableState};
+
+        let header = Row::new(["#", "TITLE", "BRANCH", "STATE"])
+            .style(Style::default().add_modifier(Modifier::BOLD));
+        let rows = self.prs.iter().map(|pr| {
+            Row::new([
+                Cell::from(format!("#{}", pr.id)),
+                Cell::from(sanitize(pr.title.as_deref().unwrap_or_default())),
+                Cell::from(sanitize(pr.source.branch_name())),
+                Cell::from(state_cell(pr.state.as_deref().unwrap_or_default())),
+            ])
+        });
+        let widths = [
+            Constraint::Length(6),
+            Constraint::Fill(1),
+            Constraint::Length(24),
+            Constraint::Length(10),
+        ];
+        let table = Table::new(rows, widths)
+            .header(header)
+            .block(block)
+            .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+            .highlight_spacing(HighlightSpacing::Always);
+
+        let mut state = TableState::default().with_selected(Some(self.selected));
+        frame.render_stateful_widget(table, area, &mut state);
     }
 
     fn render_help(&self, frame: &mut Frame) {
@@ -243,6 +315,17 @@ impl App {
         frame.render_widget(Clear, area);
         frame.render_widget(help, area);
     }
+}
+
+/// A PR state rendered as a colored span (open=green, merged=cyan, declined=red).
+fn state_cell(state: &str) -> Span<'static> {
+    let color = match state {
+        "OPEN" => Color::Green,
+        "MERGED" => Color::Cyan,
+        "DECLINED" | "SUPERSEDED" => Color::Red,
+        _ => Color::Gray,
+    };
+    Span::styled(state.to_owned(), Style::default().fg(color))
 }
 
 /// A rectangle `pct_x`% × `pct_y`% of `area`, centered.
@@ -343,6 +426,73 @@ mod tests {
         app.begin(RequestKind::Prs);
         app.update(Msg::Tick);
         assert_ne!(app.spinner, before, "loading tick advances the spinner");
+    }
+
+    fn prs(n: u64) -> Vec<PullRequest> {
+        (1..=n)
+            .map(|i| {
+                serde_json::from_str(&format!(
+                    r#"{{"id":{i},"title":"PR {i}","state":"OPEN",
+                        "source":{{"branch":{{"name":"feat/{i}"}}}}}}"#
+                ))
+                .unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn selection_moves_and_clamps_at_bounds() {
+        let mut app = App::new(true);
+        app.apply_response(Response::Prs(prs(3)));
+        assert_eq!(app.selected, 0);
+        app.update(Msg::Up); // clamps at 0
+        assert_eq!(app.selected, 0);
+        app.update(Msg::Down);
+        app.update(Msg::Down);
+        assert_eq!(app.selected, 2);
+        app.update(Msg::Down); // clamps at last
+        assert_eq!(app.selected, 2);
+        app.update(Msg::Top);
+        assert_eq!(app.selected, 0);
+        app.update(Msg::Bottom);
+        assert_eq!(app.selected, 2);
+    }
+
+    #[test]
+    fn refresh_preserves_selection_by_id() {
+        let mut app = App::new(true);
+        app.apply_response(Response::Prs(prs(3)));
+        app.update(Msg::Bottom); // select id 3 (index 2)
+        assert_eq!(app.prs[app.selected].id, 3);
+        // A refresh returns the same set in a different order; selection follows id 3.
+        let mut reordered = prs(3);
+        reordered.reverse();
+        app.apply_response(Response::Prs(reordered));
+        assert_eq!(app.prs[app.selected].id, 3);
+    }
+
+    #[test]
+    fn pr_table_renders_rows() {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(true);
+        app.apply_response(Response::Prs(prs(2)));
+        terminal.draw(|f| app.view(f)).unwrap();
+        let text = buffer_text(terminal.backend());
+        assert!(
+            text.contains("#1") && text.contains("PR 1"),
+            "buffer: {text}"
+        );
+        assert!(text.contains("feat/2"), "buffer: {text}");
+    }
+
+    #[test]
+    fn empty_pr_state_renders_message() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let app = App::new(true);
+        terminal.draw(|f| app.view(f)).unwrap();
+        assert!(buffer_text(terminal.backend()).contains("No pull requests"));
     }
 
     #[test]
