@@ -47,12 +47,7 @@ pub fn run(ctx: &Context, args: ChecksArgs) -> anyhow::Result<()> {
         .commit_hash()
         .ok_or_else(|| anyhow::anyhow!("could not determine the head commit for PR #{}", pr.id))?;
 
-    let path = format!(
-        "/repositories/{}/{}/commit/{sha}/statuses",
-        repo.workspace(),
-        repo.slug(),
-    );
-    let statuses: Vec<CommitStatus> = client.paginate(&path, None)?;
+    let statuses: Vec<CommitStatus> = super::query::checks(&client, &repo, sha)?;
 
     if args.json.requested() {
         args.json.validate(FIELDS)?;

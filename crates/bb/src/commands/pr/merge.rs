@@ -4,6 +4,8 @@ use crate::api::BitbucketClient;
 use crate::core::Context;
 use clap::Args;
 
+use super::actions;
+
 #[derive(Args, Debug)]
 pub struct MergeArgs {
     /// Pull request id (defaults to the PR for the current branch)
@@ -18,26 +20,6 @@ pub struct MergeArgs {
     /// Custom merge commit message
     #[arg(long, short = 'm')]
     pub message: Option<String>,
-}
-
-/// The JSON body sent to `POST .../pullrequests/{id}/merge`.
-#[derive(serde::Serialize)]
-struct MergeBody<'a> {
-    merge_strategy: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    message: Option<&'a str>,
-    close_source_branch: bool,
-}
-
-/// A lenient view of the merge response. Bitbucket may return either the merged
-/// pull request, or a 202 async-task envelope with no `state` — so every field
-/// is optional and we never require `id`.
-#[derive(serde::Deserialize)]
-struct MergeResult {
-    #[serde(default)]
-    state: Option<String>,
-    #[serde(default)]
-    links: crate::api::Links,
 }
 
 /// Run `bb pr merge`.
@@ -59,17 +41,14 @@ pub fn run(ctx: &Context, args: MergeArgs) -> anyhow::Result<()> {
         None => super::finder::resolve(ctx, &client, &repo, None)?.id,
     };
 
-    let body = MergeBody {
-        merge_strategy: &args.strategy,
-        message: args.message.as_deref(),
-        close_source_branch: args.close_source_branch,
-    };
-    let path = format!(
-        "/repositories/{}/{}/pullrequests/{id}/merge",
-        repo.workspace(),
-        repo.slug()
-    );
-    let result: MergeResult = client.post(&path, &body)?;
+    let result = actions::merge(
+        &client,
+        &repo,
+        id,
+        &args.strategy,
+        args.message.as_deref(),
+        args.close_source_branch,
+    )?;
 
     match result.state.as_deref() {
         Some("MERGED") => {

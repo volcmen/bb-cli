@@ -1,5 +1,6 @@
 //! `bb pr` — pull request commands.
 
+mod actions;
 mod approve;
 mod checkout;
 mod checks;
@@ -11,6 +12,7 @@ mod edit;
 mod finder;
 mod list;
 mod merge;
+mod query;
 mod render;
 mod review;
 mod status;
