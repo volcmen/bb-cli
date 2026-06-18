@@ -1,6 +1,7 @@
 //! `bb pipeline` — CI pipeline commands.
 
 mod list;
+pub(crate) mod query;
 mod run;
 mod view;
 
