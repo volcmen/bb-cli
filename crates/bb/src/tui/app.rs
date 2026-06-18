@@ -9,6 +9,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
+use std::collections::HashSet;
+
 use crate::api::models::{CommitStatus, PullRequest};
 use crate::render::sanitize;
 
@@ -50,10 +52,36 @@ impl Tab {
     }
 }
 
-/// A modal layer over the main view. The scaffold only needs the help overlay.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A modal layer over the main view.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Modal {
     Help,
+    /// A y/N confirmation guarding a destructive action.
+    Confirm {
+        action: PendingAction,
+        prompt: String,
+    },
+    /// A text-input modal for composing a comment.
+    Comment {
+        id: u64,
+        buffer: String,
+    },
+}
+
+/// A destructive action awaiting confirmation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingAction {
+    Merge(u64),
+    Decline(u64),
+}
+
+/// How raw key input should be interpreted, given the active modal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputContext {
+    Normal,
+    Help,
+    Confirm,
+    Comment,
 }
 
 /// Semantic events produced by [`keymap`](super::keymap) from raw key input.
@@ -76,6 +104,22 @@ pub enum Msg {
     Open,
     /// Open the current PR in the browser (`o`) — acted on by the event loop.
     OpenBrowser,
+    /// Approve / un-approve toggle (`a`) — acted on by the event loop.
+    Approve,
+    /// Merge (`m`) — opens a confirm modal.
+    Merge,
+    /// Decline (`x`) — opens a confirm modal.
+    Decline,
+    /// Comment (`C`) — opens an input modal.
+    Comment,
+    /// Confirm the pending destructive action (`y` in a confirm modal) — loop-handled.
+    ConfirmYes,
+    /// Submit the comment input (`Enter` in a comment modal) — loop-handled.
+    Submit,
+    /// Type a character into the comment input.
+    InsertChar(char),
+    /// Delete the last character of the comment input.
+    Backspace,
     /// Re-fetch the active section (handled by the event loop, which owns the worker).
     Refresh,
     /// Timer tick — advances the spinner (and later drives auto-refresh).
@@ -105,6 +149,8 @@ pub struct App {
     /// Whether the detail pane is open over the list.
     pub detail_open: bool,
     detail: Option<Detail>,
+    /// PR ids you've approved this session (drives the `a` toggle optimistically).
+    my_approved: HashSet<u64>,
     spinner: usize,
 }
 
@@ -122,7 +168,68 @@ impl App {
             status: None,
             detail_open: false,
             detail: None,
+            my_approved: HashSet::new(),
             spinner: 0,
+        }
+    }
+
+    /// The PR an action targets: the detail PR when open, else the selected row.
+    #[must_use]
+    pub fn action_target_id(&self) -> Option<u64> {
+        if self.detail_open {
+            self.detail_pr_id()
+        } else {
+            self.selected_pr_id()
+        }
+    }
+
+    /// The id of the PR shown in the detail pane, if open.
+    #[must_use]
+    pub fn detail_pr_id(&self) -> Option<u64> {
+        self.detail.as_ref().map(|d| d.pr.id)
+    }
+
+    /// Optimistically flip your approval for `id`, returning the new state
+    /// (`true` = now approved → send Approve; `false` = send Unapprove).
+    pub fn toggle_self_approved(&mut self, id: u64) -> bool {
+        if self.my_approved.remove(&id) {
+            false
+        } else {
+            self.my_approved.insert(id);
+            true
+        }
+    }
+
+    /// Take the pending confirm action and close the modal (loop dispatches it).
+    pub fn take_pending_confirm(&mut self) -> Option<PendingAction> {
+        if let Some(Modal::Confirm { action, .. }) = &self.modal {
+            let action = *action;
+            self.modal = None;
+            Some(action)
+        } else {
+            None
+        }
+    }
+
+    /// Take the composed comment `(id, body)` and close the modal.
+    pub fn take_comment(&mut self) -> Option<(u64, String)> {
+        if let Some(Modal::Comment { id, buffer }) = &self.modal {
+            let out = (*id, buffer.clone());
+            self.modal = None;
+            Some(out)
+        } else {
+            None
+        }
+    }
+
+    /// How the next key should be interpreted (modal-aware).
+    #[must_use]
+    pub fn input_context(&self) -> InputContext {
+        match &self.modal {
+            Some(Modal::Help) => InputContext::Help,
+            Some(Modal::Confirm { .. }) => InputContext::Confirm,
+            Some(Modal::Comment { .. }) => InputContext::Comment,
+            None => InputContext::Normal,
         }
     }
 
@@ -205,6 +312,10 @@ impl App {
                 }
                 self.done(RequestKind::PrDetail);
             }
+            Response::ActionDone(message) => {
+                self.done(RequestKind::Action);
+                self.status = Some(message);
+            }
             Response::Error(message, kind) => {
                 self.done(kind);
                 self.status = Some(message);
@@ -240,14 +351,49 @@ impl App {
                     self.begin(RequestKind::PrDetail);
                 }
             }
-            // The event loop opens the browser (it owns the Browser seam).
-            Msg::OpenBrowser => {}
             Msg::ToggleHelp => {
-                self.modal = match self.modal {
-                    Some(Modal::Help) => None,
-                    _ => Some(Modal::Help),
+                self.modal = if matches!(self.modal, Some(Modal::Help)) {
+                    None
+                } else {
+                    Some(Modal::Help)
                 };
             }
+            Msg::Merge => {
+                if let Some(id) = self.action_target_id() {
+                    self.modal = Some(Modal::Confirm {
+                        action: PendingAction::Merge(id),
+                        prompt: format!("Merge PR #{id}? (y/N)"),
+                    });
+                }
+            }
+            Msg::Decline => {
+                if let Some(id) = self.action_target_id() {
+                    self.modal = Some(Modal::Confirm {
+                        action: PendingAction::Decline(id),
+                        prompt: format!("Decline PR #{id}? (y/N)"),
+                    });
+                }
+            }
+            Msg::Comment => {
+                if let Some(id) = self.action_target_id() {
+                    self.modal = Some(Modal::Comment {
+                        id,
+                        buffer: String::new(),
+                    });
+                }
+            }
+            Msg::InsertChar(c) => {
+                if let Some(Modal::Comment { buffer, .. }) = &mut self.modal {
+                    buffer.push(c);
+                }
+            }
+            Msg::Backspace => {
+                if let Some(Modal::Comment { buffer, .. }) = &mut self.modal {
+                    buffer.pop();
+                }
+            }
+            // Acted on by the event loop (worker / Browser seam).
+            Msg::Approve | Msg::OpenBrowser | Msg::ConfirmYes | Msg::Submit | Msg::Refresh => {}
             Msg::SelectTab(n) => {
                 if let Some(tab) = Tab::ALL.get(n) {
                     self.active_tab = *tab;
@@ -288,8 +434,6 @@ impl App {
             Msg::Bottom => self.selected = self.prs.len().saturating_sub(1),
             Msg::HalfPageDown => self.move_selection(HALF_PAGE),
             Msg::HalfPageUp => self.move_selection(-HALF_PAGE),
-            // Refresh is acted on by the event loop (which owns the worker).
-            Msg::Refresh => {}
         }
     }
 
@@ -305,15 +449,25 @@ impl App {
 
         frame.render_widget(self.tab_bar(), chunks[0]);
         self.render_body(frame, chunks[1]);
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::raw(
-                "j/k move · g/G ends · r refresh · 1/2/3 sections · ? help · q quit",
-            ))),
-            chunks[2],
-        );
+        let footer = match &self.status {
+            Some(status) => Line::from(Span::styled(
+                status.clone(),
+                Style::default().fg(Color::Yellow),
+            )),
+            None => Line::from(Span::raw(
+                "j/k move · ↵ open · a approve · m merge · x decline · C comment · r refresh · ? help · q quit",
+            )),
+        };
+        frame.render_widget(Paragraph::new(footer), chunks[2]);
 
-        if self.modal == Some(Modal::Help) {
-            self.render_help(frame);
+        match &self.modal {
+            Some(Modal::Help) => self.render_help(frame),
+            Some(Modal::Confirm { prompt, .. }) => render_modal(frame, "Confirm", prompt, 50, 20),
+            Some(Modal::Comment { id, buffer }) => {
+                let body = format!("{buffer}\n\n(Enter to submit · Esc to cancel)");
+                render_modal(frame, &format!("Comment on PR #{id}"), &body, 70, 40);
+            }
+            None => {}
         }
     }
 
@@ -342,9 +496,9 @@ impl App {
             .title(self.active_tab.title());
 
         // The PR table is the one rich view so far; everything else is a centered
-        // message inside the same bordered block.
+        // message inside the same bordered block. (Toasts/errors live in the
+        // footer so they never replace the list.)
         if self.authed
-            && self.status.is_none()
             && !self.is_loading()
             && self.active_tab == Tab::PullRequests
             && !self.prs.is_empty()
@@ -355,8 +509,6 @@ impl App {
 
         let message = if !self.authed {
             "Not logged in — run `bb auth login`".to_owned()
-        } else if let Some(status) = &self.status {
-            format!("⚠ {status}")
         } else if self.is_loading() {
             format!("{} Loading pull requests…", SPINNER[self.spinner])
         } else {
@@ -508,6 +660,20 @@ fn state_cell(state: &str) -> Span<'static> {
         _ => Color::Gray,
     };
     Span::styled(state.to_owned(), Style::default().fg(color))
+}
+
+/// Render a centered modal box (`Clear`ed background) with a title and body.
+fn render_modal(frame: &mut Frame, title: &str, body: &str, pct_x: u16, pct_y: u16) {
+    let area = centered(frame.area(), pct_x, pct_y);
+    let para = Paragraph::new(body.to_owned())
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title.to_owned()),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(Clear, area);
+    frame.render_widget(para, area);
 }
 
 /// A rectangle `pct_x`% × `pct_y`% of `area`, centered.
@@ -717,6 +883,60 @@ mod tests {
             "buffer: {text}"
         );
         assert!(text.contains("Dev"), "buffer: {text}");
+    }
+
+    #[test]
+    fn merge_opens_confirm_and_does_not_act_until_confirmed() {
+        let mut app = App::new(true);
+        app.apply_response(Response::Prs(prs(1)));
+        app.update(Msg::Merge);
+        // Only a confirm modal is opened — no request can have been dispatched.
+        assert!(matches!(
+            app.modal,
+            Some(Modal::Confirm {
+                action: PendingAction::Merge(1),
+                ..
+            })
+        ));
+        // Esc cancels without acting.
+        app.update(Msg::Pop);
+        assert!(app.modal.is_none() && !app.should_quit);
+        // Re-open and "confirm": take_pending_confirm yields the action + closes.
+        app.update(Msg::Merge);
+        assert_eq!(app.take_pending_confirm(), Some(PendingAction::Merge(1)));
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn comment_modal_captures_input_and_yields_body() {
+        let mut app = App::new(true);
+        app.apply_response(Response::Prs(prs(1)));
+        app.update(Msg::Comment);
+        app.update(Msg::InsertChar('h'));
+        app.update(Msg::InsertChar('i'));
+        app.update(Msg::Backspace);
+        app.update(Msg::InsertChar('o'));
+        assert_eq!(app.take_comment(), Some((1, "ho".to_owned())));
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn approve_toggle_flips() {
+        let mut app = App::new(true);
+        assert!(app.toggle_self_approved(7)); // now approved
+        assert!(!app.toggle_self_approved(7)); // now un-approved
+    }
+
+    #[test]
+    fn input_context_tracks_modal() {
+        let mut app = App::new(true);
+        assert_eq!(app.input_context(), InputContext::Normal);
+        app.apply_response(Response::Prs(prs(1)));
+        app.update(Msg::Comment);
+        assert_eq!(app.input_context(), InputContext::Comment);
+        app.update(Msg::Pop);
+        app.update(Msg::Merge);
+        assert_eq!(app.input_context(), InputContext::Confirm);
     }
 
     #[test]

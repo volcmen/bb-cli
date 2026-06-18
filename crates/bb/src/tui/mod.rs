@@ -18,7 +18,7 @@ use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use crate::commands::pr::query::PrFilter;
 use crate::core::{Browser, RepoId, Transport};
 
-use app::{App, Msg};
+use app::{App, Msg, PendingAction};
 use worker::{Request, RequestKind, Worker};
 
 /// How often the loop wakes to advance the spinner when no input arrives.
@@ -70,31 +70,8 @@ pub fn run(
         if event::poll(TICK)? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
-                    if let Some(msg) = keymap::map_key(key) {
-                        // Requests that touch the worker / Browser seam are acted on
-                        // here; everything else folds into the model.
-                        match msg {
-                            Msg::Refresh => {
-                                if let Some(worker) = &worker {
-                                    app.begin(RequestKind::Prs);
-                                    worker.send(Request::Prs(pr_filter.clone()));
-                                }
-                            }
-                            Msg::Open => {
-                                if let Some(id) = app.selected_pr_id() {
-                                    app.update(Msg::Open);
-                                    if let Some(worker) = &worker {
-                                        worker.send(Request::PrDetail(id));
-                                    }
-                                }
-                            }
-                            Msg::OpenBrowser => {
-                                if let Some(url) = app.current_url() {
-                                    let _ = browser.browse(url);
-                                }
-                            }
-                            other => app.update(other),
-                        }
+                    if let Some(msg) = keymap::map_key(key, app.input_context()) {
+                        dispatch(&mut app, worker.as_ref(), &pr_filter, &browser, msg);
                     }
                 }
             }
@@ -102,12 +79,93 @@ pub fn run(
             app.update(Msg::Tick);
         }
 
-        // Drain any worker responses without blocking.
+        // Drain any worker responses without blocking. A completed mutation
+        // (ActionDone) triggers an auto-refresh of the list (and the detail pane,
+        // if open) so the UI reflects the new state.
         if let Some(worker) = &worker {
             while let Ok(response) = worker.rx.try_recv() {
+                let refresh = matches!(response, worker::Response::ActionDone(_));
+                let detail_id = if refresh { app.detail_pr_id() } else { None };
                 app.apply_response(response);
+                if refresh {
+                    app.begin(RequestKind::Prs);
+                    worker.send(Request::Prs(pr_filter.clone()));
+                    if let Some(id) = detail_id {
+                        app.begin(RequestKind::PrDetail);
+                        worker.send(Request::PrDetail(id));
+                    }
+                }
             }
         }
     }
     Ok(())
+}
+
+/// Route a UI message: worker- and Browser-touching messages are acted on here
+/// (the loop owns those seams); everything else folds into the model.
+fn dispatch(
+    app: &mut App,
+    worker: Option<&Worker>,
+    pr_filter: &PrFilter,
+    browser: &Arc<dyn Browser>,
+    msg: Msg,
+) {
+    // Any key press dismisses a lingering toast/error before acting on it.
+    app.status = None;
+    match msg {
+        Msg::Refresh => {
+            if let Some(worker) = worker {
+                app.begin(RequestKind::Prs);
+                worker.send(Request::Prs(pr_filter.clone()));
+            }
+        }
+        Msg::Open => {
+            if let Some(id) = app.selected_pr_id() {
+                app.update(Msg::Open);
+                if let Some(worker) = worker {
+                    worker.send(Request::PrDetail(id));
+                }
+            }
+        }
+        Msg::OpenBrowser => {
+            if let Some(url) = app.current_url() {
+                let _ = browser.browse(url);
+            }
+        }
+        Msg::Approve => {
+            if let Some(id) = app.action_target_id() {
+                let now_approved = app.toggle_self_approved(id);
+                if let Some(worker) = worker {
+                    app.begin(RequestKind::Action);
+                    worker.send(if now_approved {
+                        Request::Approve(id)
+                    } else {
+                        Request::Unapprove(id)
+                    });
+                }
+            }
+        }
+        Msg::ConfirmYes => {
+            if let Some(action) = app.take_pending_confirm() {
+                if let Some(worker) = worker {
+                    app.begin(RequestKind::Action);
+                    worker.send(match action {
+                        PendingAction::Merge(id) => Request::Merge(id),
+                        PendingAction::Decline(id) => Request::Decline(id),
+                    });
+                }
+            }
+        }
+        Msg::Submit => {
+            if let Some((id, body)) = app.take_comment() {
+                if !body.trim().is_empty() {
+                    if let Some(worker) = worker {
+                        app.begin(RequestKind::Action);
+                        worker.send(Request::Comment(id, body));
+                    }
+                }
+            }
+        }
+        other => app.update(other),
+    }
 }
