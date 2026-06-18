@@ -2,6 +2,7 @@
 
 mod clone;
 mod create;
+mod fork;
 mod list;
 mod view;
 
@@ -22,6 +23,8 @@ enum RepoCommands {
     Create(create::CreateArgs),
     /// Clone a repository
     Clone(clone::CloneArgs),
+    /// Fork a repository
+    Fork(fork::ForkArgs),
     /// List repositories in a workspace
     List(list::ListArgs),
 }
@@ -35,6 +38,7 @@ pub fn run(ctx: &Context, args: RepoArgs) -> anyhow::Result<()> {
         RepoCommands::View(a) => view::run(ctx, a),
         RepoCommands::Create(a) => create::run(ctx, a),
         RepoCommands::Clone(a) => clone::run(ctx, a),
+        RepoCommands::Fork(a) => fork::run(ctx, a),
         RepoCommands::List(a) => list::run(ctx, a),
     }
 }
