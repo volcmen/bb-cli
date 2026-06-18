@@ -11,7 +11,7 @@ use ratatui::Frame;
 
 use std::collections::HashSet;
 
-use crate::api::models::{CommitStatus, Issue, PullRequest};
+use crate::api::models::{CommitStatus, Issue, Pipeline, PipelineStep, PullRequest};
 use crate::render::sanitize;
 
 use super::worker::{RequestKind, Response};
@@ -151,6 +151,13 @@ pub struct App {
     /// Whether the repo's issue tracker is disabled.
     pub issues_disabled: bool,
     issue_detail: Option<Issue>,
+    /// Loaded pipelines.
+    pub pipelines: Vec<Pipeline>,
+    /// Index of the highlighted pipeline row.
+    pub pipeline_selected: usize,
+    /// Whether the pipeline list has been fetched yet (lazy on first switch).
+    pub pipelines_loaded: bool,
+    pipeline_detail: Option<(Pipeline, Vec<PipelineStep>)>,
     /// In-flight request kinds (drives the spinner).
     pub loading: Vec<RequestKind>,
     /// Transient status/error toast.
@@ -178,6 +185,10 @@ impl App {
             issues_loaded: false,
             issues_disabled: false,
             issue_detail: None,
+            pipelines: Vec::new(),
+            pipeline_selected: 0,
+            pipelines_loaded: false,
+            pipeline_detail: None,
             loading: Vec::new(),
             status: None,
             detail_open: false,
@@ -206,15 +217,16 @@ impl App {
         match self.active_tab {
             Tab::PullRequests => self.prs.len(),
             Tab::Issues => self.issues.len(),
-            Tab::Pipelines => 0,
+            Tab::Pipelines => self.pipelines.len(),
         }
     }
 
     /// The active section's selection index.
     fn active_sel(&self) -> usize {
         match self.active_tab {
+            Tab::PullRequests => self.selected,
             Tab::Issues => self.issue_selected,
-            _ => self.selected,
+            Tab::Pipelines => self.pipeline_selected,
         }
     }
 
@@ -222,8 +234,40 @@ impl App {
     fn set_active_sel(&mut self, value: usize) {
         let clamped = value.min(self.active_len().saturating_sub(1));
         match self.active_tab {
+            Tab::PullRequests => self.selected = clamped,
             Tab::Issues => self.issue_selected = clamped,
-            _ => self.selected = clamped,
+            Tab::Pipelines => self.pipeline_selected = clamped,
+        }
+    }
+
+    /// Whether the pipeline list still needs its initial (lazy) load.
+    #[must_use]
+    pub fn needs_pipeline_load(&self) -> bool {
+        self.active_tab == Tab::Pipelines
+            && self.authed
+            && !self.pipelines_loaded
+            && !self.loading.contains(&RequestKind::Pipelines)
+    }
+
+    /// Whether any visible pipeline is still running (drives auto-refresh polling).
+    #[must_use]
+    pub fn pipelines_active(&self) -> bool {
+        self.active_tab == Tab::Pipelines
+            && self
+                .pipelines
+                .iter()
+                .any(|p| p.state_name() != "COMPLETED" && !p.state_name().is_empty())
+    }
+
+    /// The build number of the highlighted pipeline, if the Pipelines section is active.
+    #[must_use]
+    pub fn selected_pipeline_build(&self) -> Option<u64> {
+        if self.active_tab == Tab::Pipelines {
+            self.pipelines
+                .get(self.pipeline_selected)
+                .and_then(|p| p.build_number)
+        } else {
+            None
         }
     }
 
@@ -413,6 +457,29 @@ impl App {
                 self.done(RequestKind::Issues);
                 self.done(RequestKind::IssueDetail);
             }
+            Response::Pipelines(pipelines) => {
+                let prev = self
+                    .pipelines
+                    .get(self.pipeline_selected)
+                    .and_then(|p| p.uuid.clone());
+                self.pipelines = pipelines;
+                self.pipeline_selected = prev
+                    .and_then(|uuid| {
+                        self.pipelines
+                            .iter()
+                            .position(|p| p.uuid == Some(uuid.clone()))
+                    })
+                    .unwrap_or(0)
+                    .min(self.pipelines.len().saturating_sub(1));
+                self.pipelines_loaded = true;
+                self.done(RequestKind::Pipelines);
+            }
+            Response::PipelineDetail { pipeline, steps } => {
+                if self.detail_open {
+                    self.pipeline_detail = Some((*pipeline, steps));
+                }
+                self.done(RequestKind::PipelineDetail);
+            }
             Response::ActionDone(message) => {
                 self.done(RequestKind::Action);
                 self.status = Some(message);
@@ -441,8 +508,10 @@ impl App {
                     self.detail_open = false;
                     self.detail = None;
                     self.issue_detail = None;
+                    self.pipeline_detail = None;
                     self.done(RequestKind::PrDetail);
                     self.done(RequestKind::IssueDetail);
+                    self.done(RequestKind::PipelineDetail);
                 } else {
                     self.should_quit = true;
                 }
@@ -457,6 +526,11 @@ impl App {
                     self.detail_open = true;
                     self.issue_detail = None;
                     self.begin(RequestKind::IssueDetail);
+                }
+                Tab::Pipelines if !self.pipelines.is_empty() => {
+                    self.detail_open = true;
+                    self.pipeline_detail = None;
+                    self.begin(RequestKind::PipelineDetail);
                 }
                 _ => {}
             },
@@ -633,9 +707,56 @@ impl App {
                     return self.render_issue_table(frame, area, block);
                 }
             }
-            Tab::Pipelines => "Pipelines — coming soon".to_owned(),
+            Tab::Pipelines => {
+                if self.is_loading() && self.pipelines.is_empty() {
+                    format!("{} Loading pipelines…", SPINNER[self.spinner])
+                } else if self.pipelines.is_empty() {
+                    "No pipelines".to_owned()
+                } else {
+                    return self.render_pipeline_table(frame, area, block);
+                }
+            }
         };
         frame.render_widget(Paragraph::new(message).block(block), area);
+    }
+
+    fn render_pipeline_table(&self, frame: &mut Frame, area: ratatui::layout::Rect, block: Block) {
+        use ratatui::widgets::{Cell, HighlightSpacing, Row, Table, TableState};
+
+        let header = Row::new(["#", "STATE", "RESULT", "REF", "CREATED"])
+            .style(Style::default().add_modifier(Modifier::BOLD));
+        let rows = self.pipelines.iter().map(|p| {
+            let build = p
+                .build_number
+                .map_or_else(|| "?".to_owned(), |n| format!("#{n}"));
+            let ref_name = p
+                .target
+                .as_ref()
+                .and_then(|t| t.ref_name.as_deref())
+                .unwrap_or_default();
+            let created = p.created_on.as_deref().unwrap_or_default();
+            Row::new([
+                Cell::from(build),
+                Cell::from(state_cell(p.state_name())),
+                Cell::from(state_cell(p.result_name())),
+                Cell::from(sanitize(ref_name)),
+                Cell::from(created.get(0..10).unwrap_or(created).to_owned()),
+            ])
+        });
+        let widths = [
+            Constraint::Length(7),
+            Constraint::Length(12),
+            Constraint::Length(11),
+            Constraint::Fill(1),
+            Constraint::Length(10),
+        ];
+        let table = Table::new(rows, widths)
+            .header(header)
+            .block(block)
+            .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+            .highlight_spacing(HighlightSpacing::Always);
+        let mut state = TableState::default().with_selected(Some(self.pipeline_selected));
+        frame.render_stateful_widget(table, area, &mut state);
     }
 
     fn render_issue_table(&self, frame: &mut Frame, area: ratatui::layout::Rect, block: Block) {
@@ -671,6 +792,10 @@ impl App {
     fn render_detail(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
         if self.active_tab == Tab::Issues {
             self.render_issue_detail(frame, area);
+            return;
+        }
+        if self.active_tab == Tab::Pipelines {
+            self.render_pipeline_detail(frame, area);
             return;
         }
         let Some(d) = &self.detail else {
@@ -752,6 +877,56 @@ impl App {
             .wrap(Wrap { trim: false })
             .scroll((d.scroll, 0));
         frame.render_widget(para, area);
+    }
+
+    fn render_pipeline_detail(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
+        let Some((p, steps)) = &self.pipeline_detail else {
+            let msg = format!("{} Loading pipeline…", SPINNER[self.spinner]);
+            let block = Block::default().borders(Borders::ALL).title("Pipeline");
+            frame.render_widget(Paragraph::new(msg).block(block), area);
+            return;
+        };
+
+        let build = p
+            .build_number
+            .map_or_else(|| "?".to_owned(), |n| format!("#{n}"));
+        let mut lines: Vec<Line> = vec![Line::from(vec![
+            Span::raw("State: "),
+            state_cell(p.state_name()),
+            Span::raw("  "),
+            state_cell(p.result_name()),
+        ])];
+        if let Some(ref_name) = p.target.as_ref().and_then(|t| t.ref_name.as_deref()) {
+            lines.push(Line::raw(format!("Ref: {}", sanitize(ref_name))));
+        }
+        lines.push(Line::raw(""));
+        lines.push(Line::raw("Steps:"));
+        if steps.is_empty() {
+            lines.push(Line::raw("  (none)"));
+        } else {
+            for step in steps {
+                let name = step.name.as_deref().unwrap_or("step");
+                let state = step
+                    .state
+                    .as_ref()
+                    .and_then(|s| s.name.as_deref())
+                    .unwrap_or_default();
+                lines.push(Line::from(vec![
+                    Span::raw(format!("  {name}  ")),
+                    state_cell(state),
+                ]));
+            }
+        }
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(format!("Pipeline {build}"));
+        frame.render_widget(
+            Paragraph::new(lines)
+                .block(block)
+                .wrap(Wrap { trim: false }),
+            area,
+        );
     }
 
     fn render_issue_detail(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
@@ -1222,6 +1397,67 @@ mod tests {
         app.update(Msg::SelectTab(1));
         // action_target_id is None on the Issues tab (PR actions don't apply).
         assert_eq!(app.action_target_id(), None);
+    }
+
+    fn pipelines(states: &[(&str, &str)]) -> Vec<Pipeline> {
+        states
+            .iter()
+            .enumerate()
+            .map(|(i, (state, result))| {
+                serde_json::from_str(&format!(
+                    r#"{{"build_number":{},"uuid":"{{p{i}}}",
+                        "state":{{"name":"{state}","result":{{"name":"{result}"}}}},
+                        "target":{{"ref_name":"main"}},"created_on":"2026-06-18T00:00:00Z"}}"#,
+                    i + 1
+                ))
+                .unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn pipelines_active_drives_polling() {
+        let mut app = App::new(true);
+        app.update(Msg::SelectTab(2)); // Pipelines
+                                       // A running pipeline → polling needed.
+        app.apply_response(Response::Pipelines(pipelines(&[("IN_PROGRESS", "")])));
+        assert!(app.pipelines_active());
+        // All terminal → polling stops.
+        app.apply_response(Response::Pipelines(pipelines(&[(
+            "COMPLETED",
+            "SUCCESSFUL",
+        )])));
+        assert!(!app.pipelines_active());
+    }
+
+    #[test]
+    fn pipeline_table_and_detail_render() {
+        let mut app = App::new(true);
+        app.update(Msg::SelectTab(2));
+        app.apply_response(Response::Pipelines(pipelines(&[("COMPLETED", "FAILED")])));
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.view(f)).unwrap();
+        let text = buffer_text(terminal.backend());
+        assert!(text.contains("#1"), "buffer: {text}");
+        assert!(text.contains("FAILED"), "buffer: {text}");
+
+        // Open detail.
+        app.update(Msg::Open);
+        let pipeline: Pipeline =
+            serde_json::from_str(r#"{"build_number":1,"state":{"name":"COMPLETED"}}"#).unwrap();
+        let step: PipelineStep =
+            serde_json::from_str(r#"{"name":"Build","state":{"name":"COMPLETED"}}"#).unwrap();
+        app.apply_response(Response::PipelineDetail {
+            pipeline: Box::new(pipeline),
+            steps: vec![step],
+        });
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|f| app.view(f)).unwrap();
+        let text = buffer_text(terminal.backend());
+        assert!(text.contains("Pipeline #1"), "buffer: {text}");
+        assert!(text.contains("Build"), "buffer: {text}");
     }
 
     #[test]

@@ -53,6 +53,11 @@ pub fn run(
         state: None,
         limit: 30,
     };
+    let pipeline_limit = 30usize;
+    // Auto-refresh cadence for running pipelines: poll roughly every 5s (the tick
+    // is ~120ms), bounded so it never hammers the API.
+    let mut ticks_since_poll = 0u32;
+    const POLL_EVERY_TICKS: u32 = 40;
 
     let worker = match (authed, repo) {
         (true, Some(repo)) => {
@@ -81,6 +86,7 @@ pub fn run(
                             worker.as_ref(),
                             &pr_filter,
                             &issue_filter,
+                            pipeline_limit,
                             &browser,
                             msg,
                         );
@@ -89,13 +95,31 @@ pub fn run(
             }
         } else {
             app.update(Msg::Tick);
+            ticks_since_poll += 1;
+            // Live pipeline refresh: while any run is in progress, re-fetch on a
+            // bounded cadence; stops automatically once all are terminal.
+            if ticks_since_poll >= POLL_EVERY_TICKS {
+                ticks_since_poll = 0;
+                if app.pipelines_active() {
+                    if let Some(worker) = &worker {
+                        app.begin(RequestKind::Pipelines);
+                        worker.send(Request::Pipelines(pipeline_limit));
+                    }
+                }
+            }
         }
 
-        // Lazily load the Issues section the first time it's shown.
+        // Lazily load a section the first time it's shown.
         if app.needs_issue_load() {
             if let Some(worker) = &worker {
                 app.begin(RequestKind::Issues);
                 worker.send(Request::Issues(issue_filter.clone()));
+            }
+        }
+        if app.needs_pipeline_load() {
+            if let Some(worker) = &worker {
+                app.begin(RequestKind::Pipelines);
+                worker.send(Request::Pipelines(pipeline_limit));
             }
         }
 
@@ -128,6 +152,7 @@ fn dispatch(
     worker: Option<&Worker>,
     pr_filter: &PrFilter,
     issue_filter: &IssueFilter,
+    pipeline_limit: usize,
     browser: &Arc<dyn Browser>,
     msg: Msg,
 ) {
@@ -141,7 +166,11 @@ fn dispatch(
                         app.begin(RequestKind::Issues);
                         worker.send(Request::Issues(issue_filter.clone()));
                     }
-                    _ => {
+                    Tab::Pipelines => {
+                        app.begin(RequestKind::Pipelines);
+                        worker.send(Request::Pipelines(pipeline_limit));
+                    }
+                    Tab::PullRequests => {
                         app.begin(RequestKind::Prs);
                         worker.send(Request::Prs(pr_filter.clone()));
                     }
@@ -157,7 +186,15 @@ fn dispatch(
                     }
                 }
             }
-            _ => {
+            Tab::Pipelines => {
+                if let Some(build) = app.selected_pipeline_build() {
+                    app.update(Msg::Open);
+                    if let Some(worker) = worker {
+                        worker.send(Request::PipelineDetail(build));
+                    }
+                }
+            }
+            Tab::PullRequests => {
                 if let Some(id) = app.selected_pr_id() {
                     app.update(Msg::Open);
                     if let Some(worker) = worker {

@@ -9,9 +9,10 @@
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 
-use crate::api::models::{CommitStatus, Issue, PullRequest};
+use crate::api::models::{CommitStatus, Issue, Pipeline, PipelineStep, PullRequest};
 use crate::api::BitbucketClient;
 use crate::commands::issue::query::{self as iquery, IssueFilter};
+use crate::commands::pipeline::query as plquery;
 use crate::commands::pr::query::PrFilter;
 use crate::commands::pr::{actions, query};
 use crate::core::{RepoId, Transport};
@@ -25,6 +26,8 @@ pub enum RequestKind {
     PrDetail,
     Issues,
     IssueDetail,
+    Pipelines,
+    PipelineDetail,
     Action,
 }
 
@@ -49,6 +52,10 @@ pub enum Request {
     Issues(IssueFilter),
     /// Fetch one issue (the detail pane).
     IssueDetail(u64),
+    /// Fetch recent pipelines (up to `limit`).
+    Pipelines(usize),
+    /// Fetch one pipeline (by build number) plus its steps.
+    PipelineDetail(u64),
 }
 
 /// A result delivered back to the UI thread.
@@ -64,6 +71,11 @@ pub enum Response {
     IssueDetail(Box<Issue>),
     /// The repo's issue tracker is disabled (404/410 on `/issues`).
     IssuesDisabled,
+    Pipelines(Vec<Pipeline>),
+    PipelineDetail {
+        pipeline: Box<Pipeline>,
+        steps: Vec<PipelineStep>,
+    },
     /// A mutation succeeded — carries a success toast (the UI auto-refreshes).
     ActionDone(String),
     /// A human-facing error message + the request kind it belongs to.
@@ -173,6 +185,17 @@ fn handle_request(client: &BitbucketClient, repo: &RepoId, request: Request) -> 
             Ok(issue) => Response::IssueDetail(Box::new(issue)),
             Err(e) if e.is_gone() || e.is_not_found() => Response::IssuesDisabled,
             Err(e) => Response::Error(format!("{e}"), RequestKind::IssueDetail),
+        },
+        Request::Pipelines(limit) => match plquery::list(client, repo, limit) {
+            Ok(pipelines) => Response::Pipelines(pipelines),
+            Err(e) => Response::Error(format!("{e}"), RequestKind::Pipelines),
+        },
+        Request::PipelineDetail(build) => match plquery::detail(client, repo, build) {
+            Ok((pipeline, steps)) => Response::PipelineDetail {
+                pipeline: Box::new(pipeline),
+                steps,
+            },
+            Err(e) => Response::Error(format!("{e}"), RequestKind::PipelineDetail),
         },
     }
 }
@@ -307,6 +330,26 @@ mod tests {
             worker.rx.recv().unwrap(),
             Response::IssuesDisabled
         ));
+    }
+
+    #[test]
+    fn request_pipelines_yields_response_pipelines() {
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "pipelines",
+            FakeTransport::rest(Method::Get, "/pipelines/?sort"),
+            FakeTransport::json(
+                200,
+                r#"{"values":[{"build_number":12,"state":{"name":"COMPLETED"}}]}"#,
+            ),
+        );
+        let transport: Arc<dyn Transport> = h;
+        let worker = Worker::spawn(transport, None, RepoId::new("acme", "widgets"));
+        worker.send(Request::Pipelines(30));
+        match worker.rx.recv().unwrap() {
+            Response::Pipelines(p) => assert_eq!(p[0].build_number, Some(12)),
+            other => panic!("expected Pipelines, got {other:?}"),
+        }
     }
 
     #[test]
