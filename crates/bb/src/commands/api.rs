@@ -18,8 +18,12 @@ pub struct ApiArgs {
     #[arg(short = 'X', long = "method", default_value = "GET")]
     pub method: String,
     /// Add a string field `key=value` to a JSON request body (repeatable)
-    #[arg(short = 'f', long = "field", value_name = "KEY=VALUE")]
+    #[arg(short = 'f', long = "raw-field", value_name = "KEY=VALUE")]
     pub fields: Vec<String>,
+    /// Add a typed field `key=value` (true/false/null/number parsed as JSON,
+    /// else string) to the request body (repeatable)
+    #[arg(short = 'F', long = "field", value_name = "KEY=VALUE")]
+    pub typed: Vec<String>,
     /// Follow pagination, concatenating each page's `values` into one array
     #[arg(long)]
     pub paginate: bool,
@@ -29,7 +33,7 @@ pub struct ApiArgs {
 ///
 /// # Errors
 /// Returns [`crate::core::AuthError`] when no credentials are stored,
-/// [`FlagError`] for an unknown method / malformed `-f` field / illegal flag
+/// [`FlagError`] for an unknown method / malformed `-f`/`-F` field / illegal flag
 /// combination, and [`SilentError`] when the response status is `>= 400`.
 pub fn run(ctx: &Context, args: ApiArgs) -> anyhow::Result<()> {
     let host = ctx.host();
@@ -39,14 +43,14 @@ pub fn run(ctx: &Context, args: ApiArgs) -> anyhow::Result<()> {
     let client = crate::api::BitbucketClient::new(ctx.transport.clone(), Some(header));
 
     let method = parse_method(&args.method)?;
-    let body = build_body(&args.fields)?;
+    let body = build_body(&args.fields, &args.typed)?;
 
     if args.paginate {
         if method != Method::Get {
             return Err(FlagError::new("--paginate is only supported for GET requests").into());
         }
         if body.is_some() {
-            return Err(FlagError::new("--paginate cannot be combined with -f/--field").into());
+            return Err(FlagError::new("--paginate cannot be combined with -f/-F fields").into());
         }
         return run_paginate(ctx, &client, &args.path);
     }
@@ -115,22 +119,56 @@ fn parse_method(raw: &str) -> Result<Method, FlagError> {
     }
 }
 
-/// Build a JSON-object request body from `-f key=value` repeats (string values).
-/// Returns `None` when no fields were given.
-fn build_body(fields: &[String]) -> Result<Option<Vec<u8>>, FlagError> {
-    if fields.is_empty() {
+/// Build a JSON-object request body from `-f` (raw string) and `-F` (typed)
+/// `key=value` repeats. Returns `None` when no fields were given. On a duplicate
+/// key the typed value (inserted last) wins.
+fn build_body(raw: &[String], typed: &[String]) -> Result<Option<Vec<u8>>, FlagError> {
+    if raw.is_empty() && typed.is_empty() {
         return Ok(None);
     }
-    let mut obj = serde_json::Map::with_capacity(fields.len());
-    for field in fields {
-        let (key, value) = field.split_once('=').ok_or_else(|| {
-            FlagError::new(format!("invalid field (expected KEY=VALUE): {field}"))
-        })?;
+    let mut obj = serde_json::Map::with_capacity(raw.len() + typed.len());
+    for field in raw {
+        let (key, value) = split_field(field)?;
         obj.insert(key.to_owned(), Value::String(value.to_owned()));
+    }
+    for field in typed {
+        let (key, value) = split_field(field)?;
+        obj.insert(key.to_owned(), parse_typed_value(value));
     }
     let bytes = serde_json::to_vec(&Value::Object(obj))
         .map_err(|e| FlagError::new(format!("failed to encode request body: {e}")))?;
     Ok(Some(bytes))
+}
+
+/// Split a `KEY=VALUE` field, erroring if there is no `=`.
+fn split_field(field: &str) -> Result<(&str, &str), FlagError> {
+    field
+        .split_once('=')
+        .ok_or_else(|| FlagError::new(format!("invalid field (expected KEY=VALUE): {field}")))
+}
+
+/// Parse a `-F` value: JSON literals (`true`/`false`/`null`) and numbers become
+/// the corresponding JSON value; anything else is sent as a string (the `gh -F`
+/// rule). Arbitrary JSON objects/arrays are *not* parsed — pass those as raw.
+fn parse_typed_value(raw: &str) -> Value {
+    match raw {
+        "true" => return Value::Bool(true),
+        "false" => return Value::Bool(false),
+        "null" => return Value::Null,
+        _ => {}
+    }
+    if let Ok(i) = raw.parse::<i64>() {
+        return Value::Number(i.into());
+    }
+    if let Ok(u) = raw.parse::<u64>() {
+        return Value::Number(u.into());
+    }
+    if let Ok(f) = raw.parse::<f64>() {
+        if let Some(n) = serde_json::Number::from_f64(f) {
+            return Value::Number(n);
+        }
+    }
+    Value::String(raw.to_owned())
 }
 
 #[cfg(test)]
@@ -163,8 +201,121 @@ mod tests {
             path: path.to_owned(),
             method: "GET".to_owned(),
             fields: Vec::new(),
+            typed: Vec::new(),
             paginate: false,
         }
+    }
+
+    fn sent_body(h: &FakeTransport) -> Value {
+        let reqs = h.requests.lock().unwrap();
+        serde_json::from_slice(reqs[0].body.as_ref().expect("body present")).unwrap()
+    }
+
+    fn post_with(h: &Arc<FakeTransport>, raw: Vec<&str>, typed: Vec<&str>) -> ApiArgs {
+        h.stub(
+            "post typed",
+            FakeTransport::rest(Method::Post, "/2.0/some/path"),
+            FakeTransport::json(200, r#"{"ok":true}"#),
+        );
+        ApiArgs {
+            path: "/some/path".to_owned(),
+            method: "POST".to_owned(),
+            fields: raw.into_iter().map(str::to_owned).collect(),
+            typed: typed.into_iter().map(str::to_owned).collect(),
+            paginate: false,
+        }
+    }
+
+    #[test]
+    fn typed_field_parses_literals() {
+        let h = Arc::new(FakeTransport::new());
+        let args = post_with(
+            &h,
+            vec![],
+            vec!["b=true", "f=false", "n=5", "z=null", "r=1.5"],
+        );
+        let transport: Arc<dyn Transport> = h.clone();
+        let (ctx, _b) = test_context(
+            transport,
+            git(),
+            config(),
+            Arc::new(ScriptedPrompter::new()),
+            false,
+        );
+        run(&ctx, args).unwrap();
+        assert_eq!(
+            sent_body(&h),
+            serde_json::json!({"b": true, "f": false, "n": 5, "z": null, "r": 1.5})
+        );
+    }
+
+    #[test]
+    fn typed_field_non_literal_is_string() {
+        let h = Arc::new(FakeTransport::new());
+        let args = post_with(&h, vec![], vec!["name=foo"]);
+        let transport: Arc<dyn Transport> = h.clone();
+        let (ctx, _b) = test_context(
+            transport,
+            git(),
+            config(),
+            Arc::new(ScriptedPrompter::new()),
+            false,
+        );
+        run(&ctx, args).unwrap();
+        assert_eq!(sent_body(&h), serde_json::json!({"name": "foo"}));
+    }
+
+    #[test]
+    fn raw_field_keeps_string_for_literal() {
+        let h = Arc::new(FakeTransport::new());
+        let args = post_with(&h, vec!["flag=true"], vec![]);
+        let transport: Arc<dyn Transport> = h.clone();
+        let (ctx, _b) = test_context(
+            transport,
+            git(),
+            config(),
+            Arc::new(ScriptedPrompter::new()),
+            false,
+        );
+        run(&ctx, args).unwrap();
+        assert_eq!(sent_body(&h), serde_json::json!({"flag": "true"}));
+    }
+
+    #[test]
+    fn raw_and_typed_merge() {
+        let h = Arc::new(FakeTransport::new());
+        let args = post_with(&h, vec!["a=x"], vec!["b=true"]);
+        let transport: Arc<dyn Transport> = h.clone();
+        let (ctx, _b) = test_context(
+            transport,
+            git(),
+            config(),
+            Arc::new(ScriptedPrompter::new()),
+            false,
+        );
+        run(&ctx, args).unwrap();
+        assert_eq!(sent_body(&h), serde_json::json!({"a": "x", "b": true}));
+    }
+
+    #[test]
+    fn malformed_typed_field_is_flag_error() {
+        let h = Arc::new(FakeTransport::new());
+        let transport: Arc<dyn Transport> = h.clone();
+        let (ctx, _b) = test_context(
+            transport,
+            git(),
+            config(),
+            Arc::new(ScriptedPrompter::new()),
+            false,
+        );
+        let args = ApiArgs {
+            method: "POST".to_owned(),
+            typed: vec!["novalue".to_owned()],
+            ..api_args("/some/path")
+        };
+        let err = run(&ctx, args).unwrap_err();
+        assert!(err.downcast_ref::<FlagError>().is_some(), "got: {err:?}");
+        assert_eq!(h.request_count(), 0);
     }
 
     #[test]
@@ -207,6 +358,7 @@ mod tests {
             path: "/some/path".to_owned(),
             method: "POST".to_owned(),
             fields: vec!["a=b".to_owned(), "c=d".to_owned()],
+            typed: Vec::new(),
             paginate: false,
         };
         run(&ctx, args).unwrap();
@@ -290,6 +442,7 @@ mod tests {
             path: "/some/path".to_owned(),
             method: "POST".to_owned(),
             fields: vec!["novalue".to_owned()],
+            typed: Vec::new(),
             paginate: false,
         };
         let err = run(&ctx, args).unwrap_err();
