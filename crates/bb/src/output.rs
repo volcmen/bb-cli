@@ -15,32 +15,28 @@ pub struct JsonFlags {
     /// Output JSON with the given comma-separated `fields`
     #[arg(long, value_name = "FIELDS", value_delimiter = ',')]
     pub json: Vec<String>,
-    /// Filter JSON output with a jq `expression` (implies `--json`)
+    /// Filter JSON output with a jq `expression` (implies `--json`; all fields)
     #[arg(long, short = 'q', value_name = "EXPRESSION")]
     pub jq: Option<String>,
-    /// Format JSON output with a `template` (implies `--json`)
+    /// Format JSON output with a `template` (implies `--json`; all fields)
     #[arg(long, value_name = "TEMPLATE")]
     pub template: Option<String>,
 }
 
 impl JsonFlags {
-    /// Whether JSON output was requested.
+    /// Whether JSON output was requested. `--jq` and `--template` imply
+    /// `--json`, so any of the three selects JSON mode.
     #[must_use]
     pub fn requested(&self) -> bool {
-        !self.json.is_empty()
+        !self.json.is_empty() || self.jq.is_some() || self.template.is_some()
     }
 
-    /// Validate the requested fields against `allowed`, and that `--jq` /
-    /// `--template` are only used with `--json`.
+    /// Validate the requested `--json` fields against `allowed`. `--jq` /
+    /// `--template` need no explicit fields (they operate on the full object).
     ///
     /// # Errors
-    /// Returns [`FlagError`] for an unknown field or a misused flag.
+    /// Returns [`FlagError`] for an unknown `--json` field.
     pub fn validate(&self, allowed: &[&str]) -> Result<(), FlagError> {
-        if !self.requested() && (self.jq.is_some() || self.template.is_some()) {
-            return Err(FlagError::new(
-                "`--jq` and `--template` require `--json <fields>`",
-            ));
-        }
         for field in &self.json {
             if !allowed.contains(&field.as_str()) {
                 let mut valid = allowed.to_vec();
@@ -86,7 +82,12 @@ impl JsonFlags {
 }
 
 /// Project a JSON value (array of objects, or a single object) down to `fields`.
+/// An empty `fields` list means "no projection" — the full value is returned
+/// unchanged, so `--jq`/`--template` without `--json` see every field.
 fn project(value: Value, fields: &[String]) -> Value {
+    if fields.is_empty() {
+        return value;
+    }
     match value {
         Value::Array(items) => Value::Array(
             items
@@ -258,13 +259,56 @@ mod tests {
     }
 
     #[test]
-    fn validate_jq_requires_json() {
+    fn requested_true_when_only_jq() {
         let f = JsonFlags {
             json: vec![],
             jq: Some(".".to_owned()),
             template: None,
         };
-        assert!(f.validate(&["id"]).is_err());
+        assert!(f.requested(), "--jq alone should request JSON output");
+    }
+
+    #[test]
+    fn requested_true_when_only_template() {
+        let f = JsonFlags {
+            json: vec![],
+            jq: None,
+            template: Some("{id}".to_owned()),
+        };
+        assert!(f.requested(), "--template alone should request JSON output");
+    }
+
+    #[test]
+    fn validate_allows_jq_without_json_fields() {
+        // `--jq`/`--template` now imply `--json` (no explicit fields required).
+        let f = JsonFlags {
+            json: vec![],
+            jq: Some(".".to_owned()),
+            template: None,
+        };
+        assert!(f.validate(&["id"]).is_ok());
+    }
+
+    #[test]
+    fn project_empty_fields_returns_full_value() {
+        let arr = json!([{"id": 1, "title": "a"}, {"id": 2, "title": "b"}]);
+        assert_eq!(project(arr.clone(), &[]), arr);
+        let obj = json!({"id": 1, "title": "a", "extra": true});
+        assert_eq!(project(obj.clone(), &[]), obj);
+    }
+
+    #[test]
+    fn emit_jq_without_json_fields_uses_full_object() {
+        let (io, bufs) = IoStreams::test();
+        let flags = JsonFlags {
+            json: vec![],
+            jq: Some(".[].title".to_owned()),
+            template: None,
+        };
+        // No projection -> jq sees the full objects, incl. `title`.
+        let v = json!([{"id": 1, "title": "x"}, {"id": 2, "title": "y"}]);
+        flags.emit(&io, v).unwrap();
+        assert_eq!(bufs.stdout_string(), "\"x\"\n\"y\"\n");
     }
 
     #[test]

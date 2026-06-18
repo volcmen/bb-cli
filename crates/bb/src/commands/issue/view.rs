@@ -53,6 +53,9 @@ pub fn run(ctx: &Context, args: ViewArgs) -> anyhow::Result<()> {
 
     let issue: crate::api::Issue = match client.get(&path) {
         Ok(issue) => issue,
+        // 410 (Gone) means the tracker is disabled, not that this issue is
+        // missing — distinguish it from a genuine 404.
+        Err(e) if e.is_gone() => return Err(super::tracker_disabled(&repo).into()),
         Err(e) if e.is_not_found() => {
             return Err(FlagError::new(format!("issue #{} not found", args.id)).into());
         }
@@ -282,6 +285,28 @@ mod tests {
         assert!(
             err.to_string().contains("issue #99 not found"),
             "msg: {err}"
+        );
+    }
+
+    #[test]
+    fn view_tracker_disabled_410_reports_tracker() {
+        // #77: 410 = disabled tracker, distinct from a missing issue (404).
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "get issue 410",
+            FakeTransport::rest(Method::Get, "/issues/99"),
+            FakeTransport::json(410, r#"{"type":"error","error":{"message":"Gone"}}"#),
+        );
+        let transport: Arc<dyn Transport> = h.clone();
+        let prompter = Arc::new(ScriptedPrompter::new());
+        let (mut ctx, _bufs) = test_context(transport, git(), config(), prompter, false);
+        ctx.repo_override = Some(RepoId::new("acme", "widgets"));
+
+        let err = run(&ctx, args("99", false)).unwrap_err();
+        assert!(err.downcast_ref::<FlagError>().is_some(), "got: {err}");
+        assert!(
+            err.to_string().contains("issue tracker is not enabled"),
+            "should report disabled tracker, not 'not found': {err}"
         );
     }
 

@@ -4,12 +4,16 @@ mod approve;
 mod checkout;
 mod checks;
 mod close;
+mod comment;
 mod create;
 mod diff;
+mod edit;
 mod finder;
 mod list;
 mod merge;
 mod render;
+mod review;
+mod status;
 mod view;
 
 use crate::core::Context;
@@ -25,6 +29,8 @@ pub struct PrArgs {
 enum PrCommands {
     /// Create a pull request
     Create(create::CreateArgs),
+    /// Edit a pull request's title, description, or base branch
+    Edit(edit::EditArgs),
     /// List pull requests
     List(list::ListArgs),
     /// View a pull request
@@ -37,10 +43,16 @@ enum PrCommands {
     Close(close::CloseArgs),
     /// Approve a pull request (or remove your approval)
     Approve(approve::ApproveArgs),
+    /// Review a pull request (approve / request-changes / comment)
+    Review(review::ReviewArgs),
     /// Check out a pull request's branch locally
     Checkout(checkout::CheckoutArgs),
     /// Show CI/build checks for a pull request
     Checks(checks::ChecksArgs),
+    /// Add or list comments on a pull request
+    Comment(comment::CommentArgs),
+    /// Show pull requests relevant to you (authored / review-requested)
+    Status(status::StatusArgs),
 }
 
 /// Dispatch `bb pr <sub>`.
@@ -50,13 +62,17 @@ enum PrCommands {
 pub fn run(ctx: &Context, args: PrArgs) -> anyhow::Result<()> {
     match args.command {
         PrCommands::Create(a) => create::run(ctx, a),
+        PrCommands::Edit(a) => edit::run(ctx, a),
         PrCommands::List(a) => list::run(ctx, a),
         PrCommands::View(a) => view::run(ctx, a),
         PrCommands::Diff(a) => diff::run(ctx, a),
         PrCommands::Merge(a) => merge::run(ctx, a),
         PrCommands::Close(a) => close::run(ctx, a),
         PrCommands::Approve(a) => approve::run(ctx, a),
+        PrCommands::Review(a) => review::run(ctx, a),
         PrCommands::Checkout(a) => checkout::run(ctx, a),
         PrCommands::Checks(a) => checks::run(ctx, a),
+        PrCommands::Comment(a) => comment::run(ctx, a),
+        PrCommands::Status(a) => status::run(ctx, a),
     }
 }

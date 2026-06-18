@@ -17,6 +17,9 @@ pub struct CloneArgs {
     /// Target directory (defaults to the repo slug)
     #[arg(value_name = "DIRECTORY")]
     pub dir: Option<String>,
+    /// Clone protocol (overrides the `git_protocol` config; default https)
+    #[arg(long, value_parser = ["ssh", "https"])]
+    pub protocol: Option<String>,
 }
 
 /// Run `bb repo clone`.
@@ -53,10 +56,12 @@ pub fn run(ctx: &Context, args: CloneArgs) -> anyhow::Result<()> {
         Err(e) => return Err(e.into()),
     };
 
-    // Prefer the configured protocol, falling back to the other one.
-    let protocol = ctx
-        .config
-        .get("", "git_protocol")
+    // Protocol precedence: --protocol flag, then `git_protocol` config, then
+    // https. Falls back to the other protocol if the chosen one has no URL.
+    let protocol = args
+        .protocol
+        .clone()
+        .or_else(|| ctx.config.get("", "git_protocol"))
         .unwrap_or_else(|| "https".to_owned());
     let fallback = if protocol == "ssh" { "https" } else { "ssh" };
     let url = repository
@@ -124,6 +129,7 @@ mod tests {
         CloneArgs {
             repo: repo.to_owned(),
             dir: dir.map(ToOwned::to_owned),
+            protocol: None,
         }
     }
 
@@ -172,6 +178,40 @@ mod tests {
 
         run(&ctx, args("acme/widgets", None)).unwrap();
         assert!(bufs.stdout_string().contains("✓ Cloned acme/widgets"));
+    }
+
+    #[test]
+    fn clone_protocol_flag_overrides_config_to_ssh() {
+        // #92: default (https) config, but --protocol ssh wins.
+        let h = Arc::new(FakeTransport::new());
+        stub_repo(&h);
+        let transport: Arc<dyn Transport> = h.clone();
+        let prompter = Arc::new(ScriptedPrompter::new());
+        let git = git_expecting(r"^git clone -- git@bitbucket\.org:acme/widgets\.git$");
+        let (ctx, _bufs) = test_context(transport, git, config(), prompter, false);
+
+        let a = CloneArgs {
+            protocol: Some("ssh".to_owned()),
+            ..args("acme/widgets", None)
+        };
+        run(&ctx, a).unwrap();
+    }
+
+    #[test]
+    fn clone_protocol_flag_overrides_config_to_https() {
+        // git_protocol=ssh config, but --protocol https wins.
+        let h = Arc::new(FakeTransport::new());
+        stub_repo(&h);
+        let transport: Arc<dyn Transport> = h.clone();
+        let prompter = Arc::new(ScriptedPrompter::new());
+        let git = git_expecting(r"^git clone -- https://bitbucket\.org/acme/widgets\.git$");
+        let (ctx, _bufs) = test_context(transport, git, config_ssh(), prompter, false);
+
+        let a = CloneArgs {
+            protocol: Some("https".to_owned()),
+            ..args("acme/widgets", None)
+        };
+        run(&ctx, a).unwrap();
     }
 
     #[test]

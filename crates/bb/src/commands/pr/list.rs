@@ -56,18 +56,22 @@ pub fn run(ctx: &Context, args: ListArgs) -> anyhow::Result<()> {
 
     // Bitbucket caps pagelen at 50; never request more than the user wants.
     let pagelen = args.limit.clamp(1, 50);
-    let mut path = format!(
-        "/repositories/{}/{}/pullrequests?state={}&pagelen={pagelen}",
+    let prefix = format!(
+        "/repositories/{}/{}/pullrequests?pagelen={pagelen}",
         repo.workspace(),
         repo.slug(),
-        args.state,
     );
-    if let Some(base) = &args.base {
-        path.push_str(&format!(
-            "&q={}",
-            percent_encode(&format!("destination.branch.name=\"{base}\""))
-        ));
-    }
+    // Bitbucket ignores the `state=` param when a `q=` BBQL filter is present,
+    // so when `--base` adds a `q`, the state must be folded into it too (#114).
+    let path = if let Some(branch) = &args.base {
+        let q = format!(
+            "state=\"{}\" AND destination.branch.name=\"{}\"",
+            args.state, branch
+        );
+        format!("{prefix}&q={}", percent_encode(&q))
+    } else {
+        format!("{prefix}&state={}", args.state)
+    };
 
     let prs: Vec<PullRequest> = client.paginate(&path, Some(args.limit))?;
 
@@ -210,7 +214,9 @@ mod tests {
     }
 
     #[test]
-    fn list_base_adds_query_filter() {
+    fn list_base_combines_state_and_destination_in_query() {
+        // #114: with --base set, state must be folded into the BBQL `q` (the
+        // standalone `state=` param is ignored by Bitbucket when `q` is present).
         let h = Arc::new(FakeTransport::new());
         h.stub(
             "list base",
@@ -223,16 +229,44 @@ mod tests {
 
         let a = ListArgs {
             base: Some("main".to_owned()),
+            ..list_args() // default state OPEN
+        };
+        run(&ctx, a).unwrap();
+
+        let reqs = h.requests.lock().unwrap();
+        let url = &reqs[0].url;
+        let expected_q = percent_encode(r#"state="OPEN" AND destination.branch.name="main""#);
+        assert!(url.contains(&format!("q={expected_q}")), "url: {url}");
+        // The standalone, server-ignored `state=` param must be gone.
+        assert!(
+            !url.contains("&state="),
+            "url should not carry &state=: {url}"
+        );
+    }
+
+    #[test]
+    fn list_base_uses_given_state() {
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "list base merged",
+            FakeTransport::rest(Method::Get, "/pullrequests"),
+            FakeTransport::json(200, r#"{"values": []}"#),
+        );
+        let transport: Arc<dyn Transport> = h.clone();
+        let prompter = Arc::new(ScriptedPrompter::new());
+        let (ctx, _bufs) = test_context(transport, git(), config(), prompter, false);
+
+        let a = ListArgs {
+            state: "MERGED".to_owned(),
+            base: Some("main".to_owned()),
             ..list_args()
         };
         run(&ctx, a).unwrap();
 
         let reqs = h.requests.lock().unwrap();
         let url = &reqs[0].url;
-        assert!(url.contains("state=OPEN"));
-        assert!(url.contains("q="));
         assert!(
-            url.contains("destination.branch.name") && url.contains("main"),
+            url.contains(&percent_encode(r#"state="MERGED""#)),
             "url: {url}"
         );
     }
@@ -292,6 +326,33 @@ mod tests {
         assert_eq!(arr[0]["state"], "OPEN");
         // Unrequested fields are projected away.
         assert!(arr[0].get("source").is_none(), "out: {out}");
+    }
+
+    #[test]
+    fn list_jq_without_json_filters_instead_of_table() {
+        // Regression for #76: `--jq` alone must imply JSON, not print the table.
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "list jq only",
+            FakeTransport::rest(Method::Get, "/pullrequests"),
+            FakeTransport::json(200, TWO_PRS),
+        );
+        let transport: Arc<dyn Transport> = h.clone();
+        let prompter = Arc::new(ScriptedPrompter::new());
+        let (ctx, bufs) = test_context(transport, git(), config(), prompter, false);
+
+        let a = ListArgs {
+            json: crate::output::JsonFlags {
+                json: vec![],
+                jq: Some(".[].id".to_owned()),
+                template: None,
+            },
+            ..list_args()
+        };
+        run(&ctx, a).unwrap();
+
+        let out = bufs.stdout_string();
+        assert_eq!(out, "7\n9\n", "expected jq-filtered ids, got: {out:?}");
     }
 
     #[test]
