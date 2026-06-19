@@ -66,7 +66,8 @@ struct Overrides {
 ///
 /// # Errors
 /// [`AuthError`] (4) unauthenticated; [`FlagError`] (1) when no field is given /
-/// the tracker is disabled / the issue is missing; propagates API/IO errors.
+/// the tracker is disabled / the repository is missing/inaccessible / the issue
+/// is missing; propagates API/IO errors.
 pub fn run(ctx: &Context, args: EditArgs) -> anyhow::Result<()> {
     if args.title.is_none()
         && args.body.is_none()
@@ -139,10 +140,10 @@ fn update(ctx: &Context, id: &str, overrides: Overrides, verb: &str) -> anyhow::
     );
     let current: Issue = match client.get(&path) {
         Ok(i) => i,
+        // 410 = tracker disabled. A 404 is ambiguous: disabled tracker, missing
+        // repo, or missing issue — decide by the body message.
         Err(e) if e.is_gone() => return Err(super::tracker_disabled(&repo).into()),
-        Err(e) if e.is_not_found() => {
-            return Err(FlagError::new(format!("issue #{id} not found")).into());
-        }
+        Err(e) if e.is_not_found() => return Err(super::issue_level_404(&repo, id, &e).into()),
         Err(e) => return Err(e.into()),
     };
 
@@ -347,6 +348,85 @@ mod tests {
             err.to_string().contains("issue tracker is not enabled"),
             "got: {err}"
         );
+    }
+
+    #[test]
+    fn edit_tracker_disabled_404_body_reports_tracker() {
+        // A 404 whose body says the repo has no issue tracker => tracker-disabled.
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "get 404 no tracker",
+            FakeTransport::rest(Method::Get, "/issues/5"),
+            FakeTransport::json(
+                404,
+                r#"{"type":"error","error":{"message":"Repository has no issue tracker."}}"#,
+            ),
+        );
+        let ctx = ctx_with(h.clone(), authed_config());
+        let err = run(
+            &ctx,
+            EditArgs {
+                title: Some("x".to_owned()),
+                ..edit_args("5")
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("issue tracker is not enabled"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn edit_repo_not_found_404_reports_repo() {
+        // #97: a 404 pointing at the repository must report a missing repo.
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "get 404 missing repo",
+            FakeTransport::rest(Method::Get, "/issues/5"),
+            FakeTransport::json(
+                404,
+                r#"{"type":"error","error":{"message":"Repository acme/widgets no longer exists, or you may not have access."}}"#,
+            ),
+        );
+        let ctx = ctx_with(h.clone(), authed_config());
+        let err = run(
+            &ctx,
+            EditArgs {
+                title: Some("x".to_owned()),
+                ..edit_args("5")
+            },
+        )
+        .unwrap_err();
+        assert!(err.downcast_ref::<FlagError>().is_some(), "got: {err}");
+        let msg = err.to_string();
+        assert!(msg.contains("not found"), "should report not-found: {msg}");
+        assert!(!msg.contains("tracker"), "must not say tracker: {msg}");
+    }
+
+    #[test]
+    fn edit_issue_not_found_404_reports_issue() {
+        // A 404 naming the issue (not repo/tracker) => the issue is missing.
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "get 404 missing issue",
+            FakeTransport::rest(Method::Get, "/issues/5"),
+            FakeTransport::json(
+                404,
+                r#"{"type":"error","error":{"message":"No such issue."}}"#,
+            ),
+        );
+        let ctx = ctx_with(h.clone(), authed_config());
+        let err = run(
+            &ctx,
+            EditArgs {
+                title: Some("x".to_owned()),
+                ..edit_args("5")
+            },
+        )
+        .unwrap_err();
+        assert!(err.downcast_ref::<FlagError>().is_some(), "got: {err}");
+        assert!(err.to_string().contains("issue #5 not found"), "got: {err}");
     }
 
     #[test]

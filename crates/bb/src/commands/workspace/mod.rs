@@ -1,13 +1,27 @@
 //! `bb workspace` — inspect Bitbucket Workspaces (closest `gh org` analog).
 //!
-//! `GET /2.0/workspaces` (list-all) is deprecated (CHANGE-2770), so `list` uses
-//! the documented replacement `GET /2.0/user/permissions/workspaces`. Members and
-//! projects use the (non-deprecated) `/2.0/workspaces/{ws}/…` endpoints.
+//! Bitbucket has permanently removed workspace *enumeration* (CHANGE-2770): both
+//! `GET /2.0/workspaces` and the former replacement
+//! `GET /2.0/user/permissions/workspaces` now return `410 Gone`, so `list` can't
+//! enumerate and surfaces a clear hint instead. Members and projects still work
+//! against the (non-deprecated) `/2.0/workspaces/{ws}/…` endpoints.
 
 use crate::api::models::{Membership, Project, WorkspaceMembership};
 use crate::api::BitbucketClient;
-use crate::core::{AuthError, Context};
+use crate::core::{AuthError, Context, FlagError};
 use clap::{Args, Subcommand};
+
+/// JSON fields a workspace membership can be projected to with `--json`
+/// (the serialized keys of [`WorkspaceMembership`]).
+const LIST_FIELDS: &[&str] = &["permission", "workspace"];
+
+/// JSON fields a member can be projected to with `--json`
+/// (the serialized keys of [`Membership`]).
+const MEMBER_FIELDS: &[&str] = &["user"];
+
+/// JSON fields a project can be projected to with `--json`
+/// (the serialized keys of [`Project`]).
+const PROJECT_FIELDS: &[&str] = &["key", "name", "is_private", "description", "links"];
 
 #[derive(Args, Debug)]
 pub struct WorkspaceArgs {
@@ -30,6 +44,8 @@ pub struct ListArgs {
     /// Maximum number to list
     #[arg(long, default_value_t = 30)]
     pub limit: usize,
+    #[command(flatten)]
+    pub json: crate::output::JsonFlags,
 }
 
 #[derive(Args, Debug)]
@@ -40,6 +56,8 @@ pub struct ScopedArgs {
     /// Maximum number to list
     #[arg(long, default_value_t = 30)]
     pub limit: usize,
+    #[command(flatten)]
+    pub json: crate::output::JsonFlags,
 }
 
 /// Dispatch `bb workspace <sub>`.
@@ -65,7 +83,28 @@ fn client_for(ctx: &Context) -> anyhow::Result<BitbucketClient> {
 fn list(ctx: &Context, args: ListArgs) -> anyhow::Result<()> {
     let client = client_for(ctx)?;
     let memberships: Vec<WorkspaceMembership> =
-        client.paginate("/user/permissions/workspaces", Some(args.limit))?;
+        match client.paginate("/user/permissions/workspaces", Some(args.limit)) {
+            Ok(memberships) => memberships,
+            // Bitbucket permanently removed workspace enumeration (CHANGE-2770):
+            // the endpoint now returns 410 Gone. Surface a clear hint instead of
+            // leaking the raw HTTP 410.
+            Err(e) if e.is_gone() => {
+                return Err(FlagError::new(
+                    "Bitbucket has removed the workspace-list API (CHANGE-2770). \
+                     Use `bb workspace members <ws>` or `bb workspace projects <ws>` \
+                     with a known workspace slug.",
+                )
+                .into());
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+    if args.json.requested() {
+        args.json.validate(LIST_FIELDS)?;
+        args.json
+            .emit(&ctx.io, serde_json::to_value(&memberships)?)?;
+        return Ok(());
+    }
 
     if memberships.is_empty() {
         ctx.io.println("No workspaces found");
@@ -86,6 +125,12 @@ fn members(ctx: &Context, args: ScopedArgs) -> anyhow::Result<()> {
     let path = format!("/workspaces/{}/members", args.workspace);
     let members: Vec<Membership> = client.paginate(&path, Some(args.limit))?;
 
+    if args.json.requested() {
+        args.json.validate(MEMBER_FIELDS)?;
+        args.json.emit(&ctx.io, serde_json::to_value(&members)?)?;
+        return Ok(());
+    }
+
     if members.is_empty() {
         ctx.io.println("No members found");
         return Ok(());
@@ -103,6 +148,12 @@ fn projects(ctx: &Context, args: ScopedArgs) -> anyhow::Result<()> {
     let client = client_for(ctx)?;
     let path = format!("/workspaces/{}/projects", args.workspace);
     let projects: Vec<Project> = client.paginate(&path, Some(args.limit))?;
+
+    if args.json.requested() {
+        args.json.validate(PROJECT_FIELDS)?;
+        args.json.emit(&ctx.io, serde_json::to_value(&projects)?)?;
+        return Ok(());
+    }
 
     if projects.is_empty() {
         ctx.io.println("No projects found");
@@ -158,6 +209,21 @@ mod tests {
         )
     }
 
+    fn list_args() -> ListArgs {
+        ListArgs {
+            limit: 30,
+            json: crate::output::JsonFlags::default(),
+        }
+    }
+
+    fn scoped_args(workspace: &str) -> ScopedArgs {
+        ScopedArgs {
+            workspace: workspace.to_owned(),
+            limit: 30,
+            json: crate::output::JsonFlags::default(),
+        }
+    }
+
     #[test]
     fn list_renders_workspaces() {
         let h = Arc::new(FakeTransport::new());
@@ -173,7 +239,7 @@ mod tests {
             ),
         );
         let (ctx, bufs) = ctx_with(h, authed());
-        list(&ctx, ListArgs { limit: 30 }).unwrap();
+        list(&ctx, list_args()).unwrap();
         let out = bufs.stdout_string();
         assert!(out.contains("acme\towner\tAcme Inc"), "got: {out}");
         assert!(out.contains("team2\tmember\tTeam Two"), "got: {out}");
@@ -194,14 +260,7 @@ mod tests {
             ),
         );
         let (ctx, bufs) = ctx_with(h, authed());
-        members(
-            &ctx,
-            ScopedArgs {
-                workspace: "acme".to_owned(),
-                limit: 30,
-            },
-        )
-        .unwrap();
+        members(&ctx, scoped_args("acme")).unwrap();
         let out = bufs.stdout_string();
         assert!(out.contains("Alice\talice"), "got: {out}");
         assert!(out.contains("Bob\tbob"), "got: {out}");
@@ -222,14 +281,7 @@ mod tests {
             ),
         );
         let (ctx, bufs) = ctx_with(h, authed());
-        projects(
-            &ctx,
-            ScopedArgs {
-                workspace: "acme".to_owned(),
-                limit: 30,
-            },
-        )
-        .unwrap();
+        projects(&ctx, scoped_args("acme")).unwrap();
         let out = bufs.stdout_string();
         assert!(out.contains("PROJ\tprivate\tProject X"), "got: {out}");
         assert!(out.contains("OPEN\tpublic\tOpen Source"), "got: {out}");
@@ -239,7 +291,225 @@ mod tests {
     fn list_not_authed_is_auth_error() {
         let h = Arc::new(FakeTransport::new());
         let (ctx, _bufs) = ctx_with(h, Arc::new(FileConfig::blank()));
-        let err = list(&ctx, ListArgs { limit: 30 }).unwrap_err();
+        let err = list(&ctx, list_args()).unwrap_err();
         assert!(err.downcast_ref::<AuthError>().is_some(), "got: {err}");
+    }
+
+    #[test]
+    fn list_gone_is_friendly_flag_error() {
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "list gone",
+            FakeTransport::rest(Method::Get, "/user/permissions/workspaces"),
+            FakeTransport::json(
+                410,
+                r#"{"type":"error","error":{"message":"CHANGE-2770: This endpoint has been removed."}}"#,
+            ),
+        );
+        let (ctx, _bufs) = ctx_with(h, authed());
+        let err = list(&ctx, list_args()).unwrap_err();
+
+        let flag = err.downcast_ref::<FlagError>();
+        assert!(flag.is_some(), "expected FlagError, got: {err}");
+        let msg = &flag.unwrap().0;
+        assert!(msg.contains("CHANGE-2770"), "got: {msg}");
+        assert!(msg.contains("members"), "got: {msg}");
+        assert!(msg.contains("projects"), "got: {msg}");
+        // The raw HTTP 410 must not leak through.
+        assert!(!msg.contains("HTTP 410 on https://"), "got: {msg}");
+    }
+
+    #[test]
+    fn list_json_emits_projected_fields() {
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "list json",
+            FakeTransport::rest(Method::Get, "/user/permissions/workspaces"),
+            FakeTransport::json(
+                200,
+                r#"{"values":[
+                    {"permission":"owner","workspace":{"slug":"acme","name":"Acme Inc"}}
+                ]}"#,
+            ),
+        );
+        let (ctx, bufs) = ctx_with(h, authed());
+        let a = ListArgs {
+            json: crate::output::JsonFlags {
+                json: vec!["permission".into(), "workspace".into()],
+                jq: None,
+                template: None,
+            },
+            ..list_args()
+        };
+        list(&ctx, a).unwrap();
+
+        let out = bufs.stdout_string();
+        let v: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+        let arr = v.as_array().expect("array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["permission"], "owner");
+        assert_eq!(arr[0]["workspace"]["slug"], "acme");
+    }
+
+    #[test]
+    fn list_json_unknown_field_is_flag_error() {
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "list json bogus",
+            FakeTransport::rest(Method::Get, "/user/permissions/workspaces"),
+            FakeTransport::json(200, r#"{"values":[]}"#),
+        );
+        let (ctx, _bufs) = ctx_with(h, authed());
+        let a = ListArgs {
+            json: crate::output::JsonFlags {
+                json: vec!["bogus".into()],
+                jq: None,
+                template: None,
+            },
+            ..list_args()
+        };
+        let err = list(&ctx, a).unwrap_err();
+        assert!(err.downcast_ref::<FlagError>().is_some(), "got: {err}");
+    }
+
+    #[test]
+    fn members_json_emits_projected_fields() {
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "members json",
+            FakeTransport::rest(Method::Get, "/workspaces/acme/members"),
+            FakeTransport::json(
+                200,
+                r#"{"values":[
+                    {"user":{"display_name":"Alice","username":"alice"}}
+                ]}"#,
+            ),
+        );
+        let (ctx, bufs) = ctx_with(h, authed());
+        let a = ScopedArgs {
+            json: crate::output::JsonFlags {
+                json: vec!["user".into()],
+                jq: None,
+                template: None,
+            },
+            ..scoped_args("acme")
+        };
+        members(&ctx, a).unwrap();
+
+        let out = bufs.stdout_string();
+        let v: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+        let arr = v.as_array().expect("array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["user"]["username"], "alice");
+    }
+
+    #[test]
+    fn projects_json_emits_projected_fields() {
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "projects json",
+            FakeTransport::rest(Method::Get, "/workspaces/acme/projects"),
+            FakeTransport::json(
+                200,
+                r#"{"values":[
+                    {"key":"PROJ","name":"Project X","is_private":true,"description":"d"}
+                ]}"#,
+            ),
+        );
+        let (ctx, bufs) = ctx_with(h, authed());
+        let a = ScopedArgs {
+            json: crate::output::JsonFlags {
+                json: vec!["key".into(), "name".into(), "is_private".into()],
+                jq: None,
+                template: None,
+            },
+            ..scoped_args("acme")
+        };
+        projects(&ctx, a).unwrap();
+
+        let out = bufs.stdout_string();
+        let v: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+        let arr = v.as_array().expect("array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["key"], "PROJ");
+        assert_eq!(arr[0]["name"], "Project X");
+        assert_eq!(arr[0]["is_private"], true);
+        // Unrequested field projected away.
+        assert!(arr[0].get("description").is_none(), "got: {out}");
+    }
+
+    #[test]
+    fn projects_json_unknown_field_is_flag_error() {
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "projects json bogus",
+            FakeTransport::rest(Method::Get, "/workspaces/acme/projects"),
+            FakeTransport::json(200, r#"{"values":[]}"#),
+        );
+        let (ctx, _bufs) = ctx_with(h, authed());
+        let a = ScopedArgs {
+            json: crate::output::JsonFlags {
+                json: vec!["bogus".into()],
+                jq: None,
+                template: None,
+            },
+            ..scoped_args("acme")
+        };
+        let err = projects(&ctx, a).unwrap_err();
+        assert!(err.downcast_ref::<FlagError>().is_some(), "got: {err}");
+    }
+
+    #[test]
+    fn projects_jq_filters_full_object() {
+        // `--jq`/`--template` come for free once JsonFlags is flattened — a
+        // smoke test that they reach the data without explicit `--json` fields.
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "projects jq",
+            FakeTransport::rest(Method::Get, "/workspaces/acme/projects"),
+            FakeTransport::json(
+                200,
+                r#"{"values":[
+                    {"key":"PROJ","name":"Project X"},
+                    {"key":"OPEN","name":"Open Source"}
+                ]}"#,
+            ),
+        );
+        let (ctx, bufs) = ctx_with(h, authed());
+        let a = ScopedArgs {
+            json: crate::output::JsonFlags {
+                json: vec![],
+                jq: Some(".[].key".to_owned()),
+                template: None,
+            },
+            ..scoped_args("acme")
+        };
+        projects(&ctx, a).unwrap();
+        assert_eq!(bufs.stdout_string(), "\"PROJ\"\n\"OPEN\"\n");
+    }
+
+    #[test]
+    fn projects_template_renders_rows() {
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "projects template",
+            FakeTransport::rest(Method::Get, "/workspaces/acme/projects"),
+            FakeTransport::json(200, r#"{"values":[{"key":"PROJ","name":"Project X"}]}"#),
+        );
+        let (ctx, bufs) = ctx_with(h, authed());
+        let a = ScopedArgs {
+            json: crate::output::JsonFlags {
+                json: vec![],
+                jq: None,
+                template: Some("{{ for p in items }}{p.key}={p.name}{{ endfor }}".to_owned()),
+            },
+            ..scoped_args("acme")
+        };
+        projects(&ctx, a).unwrap();
+        assert!(
+            bufs.stdout_string().contains("PROJ=Project X"),
+            "got: {}",
+            bufs.stdout_string()
+        );
     }
 }

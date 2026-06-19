@@ -55,7 +55,14 @@ impl BitbucketClient {
         if path.starts_with("http://") || path.starts_with("https://") {
             path.to_owned()
         } else {
-            format!("{}{}", self.base_url, path)
+            // Tolerate a missing (or extra) leading slash on `path`: join base and
+            // path with exactly one `/` between them, so `user` and `/user` both
+            // resolve to `.../2.0/user`.
+            format!(
+                "{}/{}",
+                self.base_url.trim_end_matches('/'),
+                path.trim_start_matches('/')
+            )
         }
     }
 
@@ -354,6 +361,33 @@ mod tests {
         let client = BitbucketClient::new(fake, None);
         let user: User = client.get("/user").unwrap();
         assert_eq!(user.username.as_deref(), Some("davidd"));
+    }
+
+    #[test]
+    fn path_with_or_without_leading_slash_resolves_the_same() {
+        let fake = Arc::new(FakeTransport::new());
+        // Two stubs, one per call: the matcher requires `/2.0/user`, so a missing
+        // leading slash that produced `/2.0user` would fail to match → panic.
+        fake.stub(
+            "GET /user (no slash)",
+            FakeTransport::rest(Method::Get, "/2.0/user"),
+            FakeTransport::json(200, r#"{"username":"davidd"}"#),
+        );
+        fake.stub(
+            "GET /user (leading slash)",
+            FakeTransport::rest(Method::Get, "/2.0/user"),
+            FakeTransport::json(200, r#"{"username":"davidd"}"#),
+        );
+        let client = BitbucketClient::new(fake.clone(), None);
+
+        let no_slash: User = client.get("user").unwrap();
+        let leading_slash: User = client.get("/user").unwrap();
+        assert_eq!(no_slash.username.as_deref(), Some("davidd"));
+        assert_eq!(leading_slash.username.as_deref(), Some("davidd"));
+
+        let reqs = fake.requests.lock().unwrap();
+        assert!(reqs[0].url.contains("/2.0/user"), "url: {}", reqs[0].url);
+        assert!(reqs[1].url.contains("/2.0/user"), "url: {}", reqs[1].url);
     }
 
     #[test]

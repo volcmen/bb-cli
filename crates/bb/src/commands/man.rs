@@ -61,7 +61,14 @@ fn render_into(cmd: &clap::Command, prefix: &str, pages: &mut Vec<(String, Vec<u
     let mut roff = Vec::new();
     // Rendering to an in-memory buffer is infallible in practice; surface any
     // error as an empty page rather than panicking in a generator.
-    let _ = clap_mangen::Man::new(cmd.clone()).render(&mut roff);
+    // Render from a clone renamed to the full dashed path so clap_mangen emits
+    // the correct `.TH`/NAME/SYNOPSIS (e.g. `bb-pr-create`, matching the
+    // filename) instead of the bare leaf name (`create`). `Command::name` wants
+    // `Into<Str>`, which only accepts a `&'static str`; leak the (tiny, ~one-per-
+    // subcommand) name string — harmless in this one-shot generator process.
+    let static_name: &'static str = String::leak(name.clone());
+    let cmd_full = cmd.clone().name(static_name);
+    let _ = clap_mangen::Man::new(cmd_full).render(&mut roff);
     pages.push((format!("{name}.1"), roff));
 
     for sub in cmd.get_subcommands() {
@@ -98,6 +105,36 @@ mod tests {
             let text = String::from_utf8_lossy(roff);
             assert!(text.contains(".TH"), "{name} missing .TH header");
         }
+    }
+
+    #[test]
+    fn nested_page_title_uses_full_dashed_name() {
+        let pages = render_pages();
+        let (_, roff) = pages
+            .iter()
+            .find(|(n, _)| n == "bb-pr-create.1")
+            .expect("bb-pr-create.1 page");
+
+        // roff escapes hyphens (`-` -> `\-`); strip the escapes before asserting
+        // so the check survives whatever escaping clap_mangen emits. The page
+        // must reference the full dashed path (`bb-pr-create`, case-insensitive
+        // since the `.TH` title is uppercased) rather than the bare leaf name.
+        let text = String::from_utf8_lossy(roff).replace('\\', "");
+        let lower = text.to_lowercase();
+        assert!(
+            lower.contains("bb-pr-create"),
+            "title/name should use the full dashed path; got:\n{text}"
+        );
+
+        // The `.TH` title line must not be the bare leaf command (`create`).
+        let th_line = text
+            .lines()
+            .find(|l| l.starts_with(".TH"))
+            .expect(".TH line");
+        assert!(
+            th_line.to_lowercase().contains("bb-pr-create"),
+            ".TH title should be the full dashed path; got: {th_line}"
+        );
     }
 
     #[test]

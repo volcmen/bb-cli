@@ -101,7 +101,22 @@ fn repos(ctx: &Context, client: &BitbucketClient, args: &WsQuery) -> anyhow::Res
 }
 
 fn code(ctx: &Context, client: &BitbucketClient, args: &WsQuery) -> anyhow::Result<()> {
-    let ws = workspace(ctx, &args.workspace)?;
+    // Bitbucket's only code-search endpoint is `/workspaces/{ws}/search/code`,
+    // which is workspace-wide — there is no documented `repo:` query qualifier
+    // to narrow it to one repository. So when the workspace was inferred from a
+    // specific repo (`-R WORKSPACE/SLUG`, or a git remote), the slug can't scope
+    // the search; warn the user instead of silently dropping it.
+    let ws = match &args.workspace {
+        Some(ws) => ws.clone(),
+        None => {
+            let repo = ctx.base_repo()?;
+            ctx.io.eprintln(&format!(
+                "note: code search is workspace-wide on Bitbucket; the repo in -R only scopes the workspace ({})",
+                repo.workspace()
+            ));
+            repo.workspace().to_owned()
+        }
+    };
     let pagelen = args.limit.clamp(1, 50);
     let sq = percent_encode(&args.query);
     let path = format!("/workspaces/{ws}/search/code?search_query={sq}&pagelen={pagelen}");
@@ -241,6 +256,60 @@ mod tests {
         let out = bufs.stdout_string();
         assert!(out.contains("src/main.rs"), "out: {out}");
         assert!(out.contains("README.md"), "out: {out}");
+    }
+
+    #[test]
+    fn code_search_without_workspace_warns_repo_only_scopes_workspace() {
+        // No `--workspace`: the workspace is inferred from `-R acme/widgets`, so
+        // the search runs workspace-wide on `acme` and the slug is dropped. The
+        // command must emit a note saying so, and still query the `acme` ws.
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "code",
+            FakeTransport::rest(Method::Get, "/workspaces/acme/search/code"),
+            FakeTransport::json(200, r#"{"values":[{"file":{"path":"src/lib.rs"}}]}"#),
+        );
+        let (ctx, bufs) = ctx_with(h.clone(), authed_config());
+        run(
+            &ctx,
+            SearchArgs {
+                command: SearchCommands::Code(WsQuery {
+                    query: "fn".to_owned(),
+                    workspace: None,
+                    limit: 30,
+                }),
+            },
+        )
+        .unwrap();
+        assert!(bufs.stdout_string().contains("src/lib.rs"));
+        let err = bufs.stderr_string();
+        assert!(err.contains("workspace-wide"), "stderr: {err}");
+        assert!(err.contains("(acme)"), "stderr: {err}");
+    }
+
+    #[test]
+    fn code_search_with_explicit_workspace_emits_no_note() {
+        // When `--workspace` is given the user already knows it's ws-scoped, so
+        // no note should be printed.
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "code",
+            FakeTransport::rest(Method::Get, "/workspaces/myws/search/code"),
+            FakeTransport::json(200, r#"{"values":[{"file":{"path":"a.rs"}}]}"#),
+        );
+        let (ctx, bufs) = ctx_with(h.clone(), authed_config());
+        run(
+            &ctx,
+            SearchArgs {
+                command: SearchCommands::Code(WsQuery {
+                    query: "fn".to_owned(),
+                    workspace: Some("myws".to_owned()),
+                    limit: 30,
+                }),
+            },
+        )
+        .unwrap();
+        assert!(bufs.stderr_string().is_empty(), "unexpected note on stderr");
     }
 
     #[test]

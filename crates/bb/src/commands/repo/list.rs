@@ -57,7 +57,14 @@ pub fn run(ctx: &Context, args: ListArgs) -> anyhow::Result<()> {
 
     let pagelen = args.limit.clamp(1, 100);
     let path = format!("/repositories/{workspace}?pagelen={pagelen}&sort=-updated_on");
-    let repos: Vec<Repository> = client.paginate(&path, Some(args.limit))?;
+    let repos: Vec<Repository> = match client.paginate(&path, Some(args.limit)) {
+        Ok(r) => r,
+        // A clean "not found" instead of leaking the raw endpoint + querystring.
+        Err(e) if e.is_not_found() => {
+            return Err(FlagError::new(format!("workspace {workspace} not found")).into());
+        }
+        Err(e) => return Err(e.into()),
+    };
 
     if args.json.requested() {
         args.json.validate(FIELDS)?;
@@ -277,6 +284,38 @@ mod tests {
         let flag = err.downcast_ref::<FlagError>();
         assert!(flag.is_some(), "expected FlagError, got: {err}");
         assert!(flag.unwrap().0.contains("specify a WORKSPACE"));
+    }
+
+    #[test]
+    fn list_unknown_workspace_is_clean_flag_error() {
+        // A bad workspace 404s the paginate call; the error must be a friendly
+        // "workspace ... not found", not a leak of the raw endpoint/querystring.
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "list 404",
+            FakeTransport::rest(Method::Get, "/repositories/zzz"),
+            FakeTransport::json(
+                404,
+                r#"{"error":{"message":"No workspace with identifier zzz."}}"#,
+            ),
+        );
+        let transport: Arc<dyn Transport> = h.clone();
+        let prompter = Arc::new(ScriptedPrompter::new());
+        let (ctx, _bufs) = test_context(transport, no_git(), config(), prompter, false);
+
+        let err = run(&ctx, list_args(Some("zzz"))).unwrap_err();
+        let flag = err.downcast_ref::<FlagError>();
+        assert!(flag.is_some(), "expected FlagError, got: {err}");
+        let msg = &flag.unwrap().0;
+        assert!(msg.contains("workspace zzz not found"), "msg: {msg}");
+        assert!(
+            !msg.contains("https://"),
+            "must not leak the endpoint: {msg}"
+        );
+        assert!(
+            !msg.contains("pagelen"),
+            "must not leak the querystring: {msg}"
+        );
     }
 
     #[test]

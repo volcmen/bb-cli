@@ -19,6 +19,15 @@ pub struct JsonFlags {
     #[arg(long, short = 'q', value_name = "EXPRESSION")]
     pub jq: Option<String>,
     /// Format JSON output with a `template` (implies `--json`; all fields)
+    ///
+    /// Uses tinytemplate syntax, NOT Go templates: interpolate a value with
+    /// single braces `{ field }`; control blocks use double braces
+    /// `{{ for x in items }}…{{ endfor }}` / `{{ if … }}…{{ endif }}`. A
+    /// top-level JSON array is exposed under the `items` key (tinytemplate
+    /// cannot iterate a bare array), so iterate with
+    /// `{{ for p in items }}…{{ endfor }}`. Example:
+    /// `--template '{{ for p in items }}{ p.id } { p.title }
+    /// {{ endfor }}'` (the newline inside the loop becomes a real line break).
     #[arg(long, value_name = "TEMPLATE")]
     pub template: Option<String>,
 }

@@ -40,7 +40,13 @@ pub fn run(ctx: &Context, args: DiffArgs) -> anyhow::Result<()> {
         repo.workspace(),
         repo.slug()
     );
-    let diff = client.get_raw(&path)?;
+    let diff = client.get_raw(&path).map_err(|e| {
+        if e.is_not_found() {
+            anyhow::anyhow!("no pull request #{id} found in {repo}")
+        } else {
+            anyhow::Error::from(e)
+        }
+    })?;
     ctx.io.print(&diff);
     Ok(())
 }
@@ -184,5 +190,29 @@ mod tests {
 
         let err = run(&ctx, args(Some("nope"))).unwrap_err();
         assert!(err.downcast_ref::<crate::core::FlagError>().is_some());
+    }
+
+    #[test]
+    fn diff_missing_pr_is_friendly_not_found() {
+        // A 404 on the diff endpoint must surface the same friendly message as
+        // `pr view`/`pr checks`, not leak the raw `.../pullrequests/1/diff` URL.
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "diff 1 404",
+            FakeTransport::rest(Method::Get, "/pullrequests/1/diff"),
+            FakeTransport::json(404, r#"{"error":{"message":"Not found"}}"#),
+        );
+        let transport: Arc<dyn Transport> = h.clone();
+        let prompter = Arc::new(ScriptedPrompter::new());
+        let (ctx, _bufs) = test_context(transport, git(), config(), prompter, false);
+
+        let err = run(&ctx, args(Some("1"))).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("no pull request #1"), "msg: {msg}");
+        assert!(msg.contains("acme/widgets"), "msg: {msg}");
+        assert!(
+            !msg.contains("https://"),
+            "must not leak the endpoint: {msg}"
+        );
     }
 }
