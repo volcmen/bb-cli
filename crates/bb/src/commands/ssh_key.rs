@@ -41,6 +41,9 @@ pub struct DeleteArgs {
 
 #[derive(serde::Deserialize)]
 struct SshKey {
+    /// Stable identifier (`{...}`), required by `bb ssh-key delete <KEY-UUID>`.
+    #[serde(default)]
+    uuid: Option<String>,
     #[serde(default)]
     label: Option<String>,
     #[serde(default)]
@@ -84,9 +87,12 @@ fn list(ctx: &Context, client: &BitbucketClient, base: &str) -> anyhow::Result<(
         return Ok(());
     }
     for k in keys {
+        // uuid first so the list → `bb ssh-key delete <KEY-UUID>` workflow is
+        // copy-pastable; layout is `uuid\tlabel\tpublickey`.
+        let uuid = k.uuid.as_deref().unwrap_or_default();
         let label = k.label.as_deref().unwrap_or("(no label)");
         let key = k.key.as_deref().unwrap_or_default();
-        ctx.io.println(&format!("{label}\t{key}"));
+        ctx.io.println(&format!("{uuid}\t{label}\t{key}"));
     }
     Ok(())
 }
@@ -180,13 +186,14 @@ mod tests {
             FakeTransport::rest(Method::Get, "/ssh-keys"),
             FakeTransport::json(
                 200,
-                r#"{"values":[{"label":"laptop","key":"ssh-rsa AAAA"}]}"#,
+                r#"{"values":[{"uuid":"{k1}","label":"laptop","key":"ssh-rsa AAAA"}]}"#,
             ),
         );
         let (ctx, bufs) = ctx_with(h.clone(), authed_config());
         run(&ctx, list_args()).unwrap();
         let out = bufs.stdout_string();
-        assert!(out.contains("laptop\tssh-rsa AAAA"), "out: {out}");
+        // uuid (needed by `delete`) leads, then label, then the key.
+        assert!(out.contains("{k1}\tlaptop\tssh-rsa AAAA"), "out: {out}");
     }
 
     #[test]

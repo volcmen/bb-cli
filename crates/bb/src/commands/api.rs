@@ -17,11 +17,13 @@ pub struct ApiArgs {
     /// HTTP method
     #[arg(short = 'X', long = "method", default_value = "GET")]
     pub method: String,
-    /// Add a string field `key=value` to a JSON request body (repeatable)
+    /// Add a string field `key=value` (repeatable). On GET it becomes a
+    /// query-string parameter; on other methods a JSON request body field
     #[arg(short = 'f', long = "raw-field", value_name = "KEY=VALUE")]
     pub fields: Vec<String>,
     /// Add a typed field `key=value` (true/false/null/number parsed as JSON,
-    /// else string) to the request body (repeatable)
+    /// else string) (repeatable). On GET it becomes a query-string parameter;
+    /// on other methods a JSON request body field
     #[arg(short = 'F', long = "field", value_name = "KEY=VALUE")]
     pub typed: Vec<String>,
     /// Follow pagination, concatenating each page's `values` into one array
@@ -65,19 +67,26 @@ pub fn run(ctx: &Context, args: ApiArgs) -> anyhow::Result<()> {
     let client = crate::api::BitbucketClient::new(ctx.transport.clone(), Some(header));
 
     let method = parse_method(&args.method)?;
-    let body = build_body(&args.fields, &args.typed)?;
+
+    // `gh` maps -f/-F on a GET to query-string params (a GET has no body); on
+    // any other method they form a JSON request body. We map fields→query for
+    // every GET, including --paginate, so the paginate path needs no special
+    // case (and the first page carries the params; Bitbucket echoes them in its
+    // `next` URL).
+    let (path, body) = if method == Method::Get {
+        (append_query(&args.path, &args.fields, &args.typed)?, None)
+    } else {
+        (args.path.clone(), build_body(&args.fields, &args.typed)?)
+    };
 
     if args.paginate {
         if method != Method::Get {
             return Err(FlagError::new("--paginate is only supported for GET requests").into());
         }
-        if body.is_some() {
-            return Err(FlagError::new("--paginate cannot be combined with -f/-F fields").into());
-        }
-        return run_paginate(ctx, &client, &args.path, args.output_filter().as_ref());
+        return run_paginate(ctx, &client, &path, args.output_filter().as_ref());
     }
 
-    let resp = client.execute_raw(method, &args.path, body)?;
+    let resp = client.execute_raw(method, &path, body)?;
     emit_response(ctx, &resp.body, args.output_filter().as_ref())?;
 
     if resp.status >= 400 {
@@ -180,6 +189,29 @@ fn build_body(raw: &[String], typed: &[String]) -> Result<Option<Vec<u8>>, FlagE
     let bytes = serde_json::to_vec(&Value::Object(obj))
         .map_err(|e| FlagError::new(format!("failed to encode request body: {e}")))?;
     Ok(Some(bytes))
+}
+
+/// Append `-f`/`-F` fields to `path` as percent-encoded query-string params (the
+/// `gh` behavior for GET). Fields are appended in order — raw `-f` first, then
+/// typed `-F` — and query values are always strings (the typed-vs-string `-F`
+/// distinction only matters for a JSON body). Returns `path` unchanged when no
+/// fields were given. If `path` already contains a `?`, params are joined with
+/// `&`, otherwise the first one starts the query with `?`.
+fn append_query(path: &str, raw: &[String], typed: &[String]) -> Result<String, FlagError> {
+    if raw.is_empty() && typed.is_empty() {
+        return Ok(path.to_owned());
+    }
+    let mut out = path.to_owned();
+    let mut sep = if path.contains('?') { '&' } else { '?' };
+    for field in raw.iter().chain(typed.iter()) {
+        let (key, value) = split_field(field)?;
+        out.push(sep);
+        out.push_str(&crate::render::percent_encode(key));
+        out.push('=');
+        out.push_str(&crate::render::percent_encode(value));
+        sep = '&';
+    }
+    Ok(out)
 }
 
 /// Split a `KEY=VALUE` field, erroring if there is no `=`.
@@ -416,6 +448,38 @@ mod tests {
         assert_eq!(req.method, Method::Post);
         let sent: Value = serde_json::from_slice(req.body.as_ref().expect("body present")).unwrap();
         assert_eq!(sent, serde_json::json!({"a": "b", "c": "d"}));
+    }
+
+    #[test]
+    fn get_fields_become_query_string() {
+        let h = Arc::new(FakeTransport::new());
+        // Matcher requires the param in the URL: a body-encoded field (the old
+        // bug) would not match and would panic instead.
+        h.stub(
+            "get with query",
+            FakeTransport::rest(Method::Get, "/2.0/items?pagelen=1"),
+            FakeTransport::json(200, r#"{"values":[]}"#),
+        );
+        let transport: Arc<dyn Transport> = h.clone();
+        let prompter = Arc::new(ScriptedPrompter::new());
+        let (ctx, _bufs) = test_context(transport, git(), config(), prompter, false);
+
+        let args = ApiArgs {
+            fields: vec!["pagelen=1".to_owned()],
+            ..api_args("/items")
+        };
+        run(&ctx, args).unwrap();
+
+        let reqs = h.requests.lock().unwrap();
+        let req = &reqs[0];
+        assert_eq!(req.method, Method::Get);
+        assert!(req.url.contains("pagelen=1"), "url: {}", req.url);
+        // A GET must carry no body — the fields went into the query string.
+        assert!(
+            req.body.is_none(),
+            "GET should have no body: {:?}",
+            req.body
+        );
     }
 
     #[test]

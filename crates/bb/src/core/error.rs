@@ -123,6 +123,18 @@ impl ApiError {
     pub fn is_gone(&self) -> bool {
         self.status() == Some(410)
     }
+
+    /// The human-readable message Bitbucket returned for an HTTP error (its
+    /// `error.message`), if this is an [`ApiError::Http`]. Lets callers tell
+    /// otherwise-identical statuses apart by body — e.g. a 404 whose message
+    /// mentions "no issue tracker" (feature disabled) vs. a missing repository.
+    #[must_use]
+    pub fn http_message(&self) -> Option<&str> {
+        match self {
+            ApiError::Http { message, .. } => Some(message),
+            _ => None,
+        }
+    }
 }
 
 /// Errors from the git integration layer.

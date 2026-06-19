@@ -26,9 +26,11 @@ pub struct ViewArgs {
 /// Run `bb issue view`.
 ///
 /// # Errors
-/// Returns [`AuthError`] (exit 4) if not authenticated for the repo's host,
-/// [`FlagError`] (exit 1) for a malformed id or when the issue is not found,
-/// and propagates [`ApiError`](crate::core::ApiError) from the lookup.
+/// Returns [`AuthError`] (exit 4) if not authenticated for the repo's host, and
+/// [`FlagError`] (exit 1) for a malformed id, when the tracker is disabled (410,
+/// or a 404 whose body says so), when the repository is missing/inaccessible, or
+/// when the issue isn't found. Other [`ApiError`](crate::core::ApiError)s from
+/// the lookup are propagated.
 pub fn run(ctx: &Context, args: ViewArgs) -> anyhow::Result<()> {
     let repo = ctx.base_repo()?;
     let host = repo.host().to_owned();
@@ -53,11 +55,12 @@ pub fn run(ctx: &Context, args: ViewArgs) -> anyhow::Result<()> {
 
     let issue: crate::api::Issue = match client.get(&path) {
         Ok(issue) => issue,
-        // 410 (Gone) means the tracker is disabled, not that this issue is
-        // missing — distinguish it from a genuine 404.
+        // 410 (Gone) means the tracker is disabled. A 404 is ambiguous —
+        // distinguish a disabled tracker, a missing repo, and a missing issue
+        // by the body message.
         Err(e) if e.is_gone() => return Err(super::tracker_disabled(&repo).into()),
         Err(e) if e.is_not_found() => {
-            return Err(FlagError::new(format!("issue #{} not found", args.id)).into());
+            return Err(super::issue_level_404(&repo, &args.id, &e).into());
         }
         Err(e) => return Err(e.into()),
     };
@@ -265,6 +268,8 @@ mod tests {
 
     #[test]
     fn view_not_found_is_flag_error() {
+        // A 404 whose body names the issue (not the repo/tracker) => the issue
+        // itself is missing.
         let h = Arc::new(FakeTransport::new());
         h.stub(
             "get issue 404",
@@ -284,6 +289,57 @@ mod tests {
         assert!(flag.is_some(), "expected FlagError, got: {err}");
         assert!(
             err.to_string().contains("issue #99 not found"),
+            "msg: {err}"
+        );
+    }
+
+    #[test]
+    fn view_repo_not_found_404_reports_repo() {
+        // #97: a 404 whose body points at the repository (no longer exists / no
+        // access) must report a missing repo, not a missing issue.
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "get issue 404 missing repo",
+            FakeTransport::rest(Method::Get, "/issues/99"),
+            FakeTransport::json(
+                404,
+                r#"{"type":"error","error":{"message":"Repository acme/widgets no longer exists, or you may not have access."}}"#,
+            ),
+        );
+        let transport: Arc<dyn Transport> = h.clone();
+        let prompter = Arc::new(ScriptedPrompter::new());
+        let (mut ctx, _bufs) = test_context(transport, git(), config(), prompter, false);
+        ctx.repo_override = Some(RepoId::new("acme", "widgets"));
+
+        let err = run(&ctx, args("99", false)).unwrap_err();
+        assert!(err.downcast_ref::<FlagError>().is_some(), "got: {err}");
+        let msg = err.to_string();
+        assert!(msg.contains("repository"), "should name the repo: {msg}");
+        assert!(msg.contains("not found"), "should report not-found: {msg}");
+        assert!(!msg.contains("tracker"), "must not say tracker: {msg}");
+    }
+
+    #[test]
+    fn view_tracker_disabled_404_body_reports_tracker() {
+        // A 404 whose body says the repo has no issue tracker => tracker-disabled.
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "get issue 404 no tracker",
+            FakeTransport::rest(Method::Get, "/issues/99"),
+            FakeTransport::json(
+                404,
+                r#"{"type":"error","error":{"message":"Repository has no issue tracker."}}"#,
+            ),
+        );
+        let transport: Arc<dyn Transport> = h.clone();
+        let prompter = Arc::new(ScriptedPrompter::new());
+        let (mut ctx, _bufs) = test_context(transport, git(), config(), prompter, false);
+        ctx.repo_override = Some(RepoId::new("acme", "widgets"));
+
+        let err = run(&ctx, args("99", false)).unwrap_err();
+        assert!(err.downcast_ref::<FlagError>().is_some(), "got: {err}");
+        assert!(
+            err.to_string().contains("issue tracker is not enabled"),
             "msg: {err}"
         );
     }

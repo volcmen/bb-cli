@@ -28,10 +28,11 @@ pub struct ListArgs {
 /// Run `bb issue list`.
 ///
 /// # Errors
-/// Returns [`AuthError`] (exit 4) if not authenticated for the repo's host,
+/// Returns [`AuthError`] (exit 4) if not authenticated for the repo's host, and
 /// [`FlagError`](crate::core::FlagError) (exit 1) if the repo's issue tracker is
-/// disabled (the API returns 410 Gone, or 404, on `/issues`), and propagates
-/// [`ApiError`](crate::core::ApiError) from the listing call.
+/// disabled (410 Gone, or a 404 whose body says the repo has no issue tracker)
+/// or if the repository doesn't exist / isn't accessible (a plain 404). Other
+/// [`ApiError`](crate::core::ApiError)s from the listing call are propagated.
 pub fn run(ctx: &Context, args: ListArgs) -> anyhow::Result<()> {
     let repo = ctx.base_repo()?;
     let host = repo.host().to_owned();
@@ -57,11 +58,11 @@ pub fn run(ctx: &Context, args: ListArgs) -> anyhow::Result<()> {
 
     let issues: Vec<Issue> = match client.paginate(&path, Some(args.limit)) {
         Ok(issues) => issues,
-        // A disabled tracker returns 410 (Gone) — or sometimes 404 — on
-        // `/issues`; turn either into a clear usage error.
-        Err(e) if e.is_gone() || e.is_not_found() => {
-            return Err(super::tracker_disabled(&repo).into());
-        }
+        // A disabled tracker returns 410 (Gone) on `/issues`. A 404 is
+        // ambiguous: it's a disabled tracker only when the body says so —
+        // otherwise the repository is missing or inaccessible.
+        Err(e) if e.is_gone() => return Err(super::tracker_disabled(&repo).into()),
+        Err(e) if e.is_not_found() => return Err(super::repo_level_404(&repo, &e).into()),
         Err(e) => return Err(e.into()),
     };
 
@@ -352,10 +353,12 @@ mod tests {
     }
 
     #[test]
-    fn list_tracker_disabled_is_flag_error() {
+    fn list_tracker_disabled_404_body_is_flag_error() {
+        // A 404 whose body says the repo has no issue tracker => tracker-disabled
+        // (not a missing repo).
         let h = Arc::new(FakeTransport::new());
         h.stub(
-            "list 404",
+            "list 404 no tracker",
             FakeTransport::rest(Method::Get, "/issues"),
             FakeTransport::json(
                 404,
@@ -374,6 +377,34 @@ mod tests {
             err.to_string()
                 .contains("issue tracker is not enabled for acme/widgets"),
             "msg: {err}"
+        );
+    }
+
+    #[test]
+    fn list_repo_not_found_404_is_distinct_error() {
+        // #97: a plain 404 (typo'd/inaccessible repo) must NOT be reported as a
+        // disabled tracker — it's a missing repository.
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "list 404 missing repo",
+            FakeTransport::rest(Method::Get, "/issues"),
+            FakeTransport::json(
+                404,
+                r#"{"type":"error","error":{"message":"Repository acme/widgets no longer exists, or you may not have access."}}"#,
+            ),
+        );
+        let transport: Arc<dyn Transport> = h.clone();
+        let prompter = Arc::new(ScriptedPrompter::new());
+        let (mut ctx, _bufs) = test_context(transport, git(), config(), prompter, false);
+        ctx.repo_override = Some(RepoId::new("acme", "widgets"));
+
+        let err = run(&ctx, list_args()).unwrap_err();
+        assert!(err.downcast_ref::<FlagError>().is_some(), "got: {err}");
+        let msg = err.to_string();
+        assert!(msg.contains("not found"), "should report not-found: {msg}");
+        assert!(
+            !msg.contains("tracker"),
+            "must not mislabel a missing repo as a disabled tracker: {msg}"
         );
     }
 

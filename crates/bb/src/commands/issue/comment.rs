@@ -65,12 +65,14 @@ pub fn run(ctx: &Context, args: CommentArgs) -> anyhow::Result<()> {
         repo.slug()
     );
     // Comment response shape is loose; we don't need any of its fields.
+    let id_str = id.to_string();
     let _resp: serde_json::Value = match client.post(&path, &payload) {
         Ok(v) => v,
-        // 410 = tracker disabled; 404 = the issue itself is missing.
+        // 410 = tracker disabled. A 404 is ambiguous: disabled tracker, missing
+        // repo, or missing issue — decide by the body message.
         Err(e) if e.is_gone() => return Err(super::tracker_disabled(&repo).into()),
         Err(e) if e.is_not_found() => {
-            return Err(FlagError::new(format!("issue #{id} not found")).into());
+            return Err(super::issue_level_404(&repo, &id_str, &e).into());
         }
         Err(e) => return Err(e.into()),
     };
@@ -251,6 +253,95 @@ mod tests {
             err.to_string().contains("issue tracker is not enabled"),
             "msg: {err}"
         );
+    }
+
+    #[test]
+    fn comment_tracker_disabled_404_body_is_flag_error() {
+        // A 404 whose body says the repo has no issue tracker => tracker-disabled.
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "comment 404 no tracker",
+            FakeTransport::rest(Method::Post, "/repositories/acme/widgets/issues/7/comments"),
+            FakeTransport::json(
+                404,
+                r#"{"type":"error","error":{"message":"Repository has no issue tracker."}}"#,
+            ),
+        );
+        let (ctx, _bufs) = ctx_with(
+            h.clone(),
+            authed_config(),
+            Arc::new(ScriptedPrompter::new()),
+        );
+
+        let a = CommentArgs {
+            id: "7".to_owned(),
+            body: Some("hi".to_owned()),
+            body_file: None,
+        };
+        let err = run(&ctx, a).unwrap_err();
+        assert!(err.downcast_ref::<FlagError>().is_some(), "got: {err}");
+        assert!(
+            err.to_string().contains("issue tracker is not enabled"),
+            "msg: {err}"
+        );
+    }
+
+    #[test]
+    fn comment_repo_not_found_404_reports_repo() {
+        // #97: a 404 pointing at the repository must report a missing repo.
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "comment 404 missing repo",
+            FakeTransport::rest(Method::Post, "/repositories/acme/widgets/issues/7/comments"),
+            FakeTransport::json(
+                404,
+                r#"{"type":"error","error":{"message":"Repository acme/widgets no longer exists, or you may not have access."}}"#,
+            ),
+        );
+        let (ctx, _bufs) = ctx_with(
+            h.clone(),
+            authed_config(),
+            Arc::new(ScriptedPrompter::new()),
+        );
+
+        let a = CommentArgs {
+            id: "7".to_owned(),
+            body: Some("hi".to_owned()),
+            body_file: None,
+        };
+        let err = run(&ctx, a).unwrap_err();
+        assert!(err.downcast_ref::<FlagError>().is_some(), "got: {err}");
+        let msg = err.to_string();
+        assert!(msg.contains("not found"), "should report not-found: {msg}");
+        assert!(!msg.contains("tracker"), "must not say tracker: {msg}");
+    }
+
+    #[test]
+    fn comment_issue_not_found_404_reports_issue() {
+        // A 404 naming the issue (not repo/tracker) => the issue is missing.
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "comment 404 missing issue",
+            FakeTransport::rest(Method::Post, "/repositories/acme/widgets/issues/7/comments"),
+            FakeTransport::json(
+                404,
+                r#"{"type":"error","error":{"message":"No such issue."}}"#,
+            ),
+        );
+        let (ctx, _bufs) = ctx_with(
+            h.clone(),
+            authed_config(),
+            Arc::new(ScriptedPrompter::new()),
+        );
+
+        let a = CommentArgs {
+            id: "7".to_owned(),
+            body: Some("hi".to_owned()),
+            body_file: None,
+        };
+        let err = run(&ctx, a).unwrap_err();
+        assert!(err.downcast_ref::<FlagError>().is_some(), "got: {err}");
+        assert!(err.to_string().contains("issue #7 not found"), "msg: {err}");
     }
 
     #[test]

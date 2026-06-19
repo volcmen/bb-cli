@@ -84,9 +84,10 @@ pub fn run(ctx: &Context, args: CreateArgs) -> anyhow::Result<()> {
     let path = format!("/repositories/{}/{}/issues", repo.workspace(), repo.slug());
     let issue: Issue = match client.post(&path, &payload) {
         Ok(issue) => issue,
-        Err(e) if e.is_gone() || e.is_not_found() => {
-            return Err(super::tracker_disabled(&repo).into());
-        }
+        // 410 = disabled tracker. A 404 means a disabled tracker only when the
+        // body says so; otherwise the repo is missing or inaccessible.
+        Err(e) if e.is_gone() => return Err(super::tracker_disabled(&repo).into()),
+        Err(e) if e.is_not_found() => return Err(super::repo_level_404(&repo, &e).into()),
         Err(e) => return Err(e.into()),
     };
 
@@ -287,6 +288,66 @@ mod tests {
             err.to_string().contains("issue tracker is not enabled"),
             "msg: {err}"
         );
+    }
+
+    #[test]
+    fn create_tracker_disabled_404_body_is_flag_error() {
+        // A 404 whose body says the repo has no issue tracker => tracker-disabled.
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "create 404 no tracker",
+            FakeTransport::rest(Method::Post, "/repositories/acme/widgets/issues"),
+            FakeTransport::json(
+                404,
+                r#"{"type":"error","error":{"message":"Repository has no issue tracker."}}"#,
+            ),
+        );
+        let (ctx, _bufs) = ctx_with(
+            h.clone(),
+            authed_config(),
+            Arc::new(ScriptedPrompter::new()),
+        );
+
+        let a = CreateArgs {
+            title: Some("T".to_owned()),
+            ..args()
+        };
+        let err = run(&ctx, a).unwrap_err();
+        assert!(err.downcast_ref::<FlagError>().is_some(), "got: {err}");
+        assert!(
+            err.to_string().contains("issue tracker is not enabled"),
+            "msg: {err}"
+        );
+    }
+
+    #[test]
+    fn create_repo_not_found_404_is_distinct_error() {
+        // #97: a plain 404 (missing/inaccessible repo) must report not-found,
+        // not a disabled tracker.
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "create 404 missing repo",
+            FakeTransport::rest(Method::Post, "/repositories/acme/widgets/issues"),
+            FakeTransport::json(
+                404,
+                r#"{"type":"error","error":{"message":"Repository acme/widgets no longer exists, or you may not have access."}}"#,
+            ),
+        );
+        let (ctx, _bufs) = ctx_with(
+            h.clone(),
+            authed_config(),
+            Arc::new(ScriptedPrompter::new()),
+        );
+
+        let a = CreateArgs {
+            title: Some("T".to_owned()),
+            ..args()
+        };
+        let err = run(&ctx, a).unwrap_err();
+        assert!(err.downcast_ref::<FlagError>().is_some(), "got: {err}");
+        let msg = err.to_string();
+        assert!(msg.contains("not found"), "should report not-found: {msg}");
+        assert!(!msg.contains("tracker"), "must not say tracker: {msg}");
     }
 
     #[test]

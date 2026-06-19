@@ -8,7 +8,10 @@ use clap::Args;
 use crate::auth;
 use crate::render::sanitize;
 
-/// JSON fields a repository can be projected to with `--json`.
+/// JSON fields a repository can be projected to with `--json`. Must match the
+/// full set of keys `api::models::Repository` serializes (no `skip_serializing_if`,
+/// so every field is emitted), or `--json <field>` rejects keys that `--jq '.'`
+/// would happily dump.
 const FIELDS: &[&str] = &[
     "slug",
     "name",
@@ -17,6 +20,8 @@ const FIELDS: &[&str] = &[
     "description",
     "mainbranch",
     "links",
+    "has_issues",
+    "parent",
 ];
 
 #[derive(Args, Debug)]
@@ -385,6 +390,41 @@ mod tests {
         };
         let err = run(&ctx, a).unwrap_err();
         assert!(err.downcast_ref::<FlagError>().is_some());
+    }
+
+    #[test]
+    fn view_json_accepts_full_serialized_field_set() {
+        // `--jq '.'` dumps every key the `Repository` struct serializes (incl.
+        // `has_issues`, `parent`). Those must therefore be accepted by
+        // `--json <field>` too — previously `has_issues` was rejected as unknown.
+        let h = Arc::new(FakeTransport::new());
+        h.stub(
+            "get repo json has_issues",
+            FakeTransport::rest(Method::Get, "/repositories/acme/widgets"),
+            FakeTransport::json(
+                200,
+                r#"{"full_name":"acme/widgets","is_private":true,"has_issues":true}"#,
+            ),
+        );
+        let transport: Arc<dyn Transport> = h.clone();
+        let prompter = Arc::new(ScriptedPrompter::new());
+        let (ctx, bufs) = test_context(transport, no_git(), config(), prompter, false);
+
+        let a = ViewArgs {
+            repo: Some("acme/widgets".to_owned()),
+            web: false,
+            json: crate::output::JsonFlags {
+                json: vec!["has_issues".into()],
+                jq: None,
+                template: None,
+            },
+        };
+        // Must not error (the field is now in the allowlist) and must project it.
+        run(&ctx, a).unwrap();
+
+        let out = bufs.stdout_string();
+        let v: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+        assert_eq!(v["has_issues"], true, "out: {out}");
     }
 
     #[test]
