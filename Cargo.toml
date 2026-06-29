@@ -38,7 +38,7 @@ jaq-core = "3.1.0"
 jaq-std = "3.0.1"
 jaq-json = "2.0.1"
 # TUI (bb dash) — ratatui re-exports its matching crossterm under ratatui::crossterm
-ratatui = "0.29"
+ratatui = "0.30"
 
 # dev
 assert_cmd = "2"
