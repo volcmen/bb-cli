@@ -31,7 +31,7 @@ base64 = "0.22"
 getrandom = "0.2"
 sha2 = "0.10"
 tinytemplate = "1.2"
-which = "7"
+which = "8"
 regex = "1"
 # pure-Rust jq (jaq 3.x line): load/Compiler/Ctx + jaq-json::Val
 jaq-core = "3.1.0"
