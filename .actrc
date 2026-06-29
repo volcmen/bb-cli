@@ -1,0 +1,16 @@
+# Default config for running the CI workflow locally with `act`
+# (https://github.com/nektos/act). The hosted GitHub Actions workflow is the
+# source of truth; this lets you reproduce it on your machine.
+#
+# Use the catthehacker runner image (closest to GitHub's ubuntu-latest, ships
+# node so JS actions like Swatinem/rust-cache work). On Apple Silicon, act runs
+# the arm64 variant natively — fast, and avoids QEMU compiler crashes. Add
+# `--container-architecture linux/amd64` on the command line if you need to
+# reproduce an x86_64-specific issue (slower, emulated).
+-P ubuntu-latest=catthehacker/ubuntu:act-latest
+
+# Usage:
+#   act push -j fmt
+#   act push -j clippy
+#   act push -j test --matrix os:ubuntu-latest
+# (macos-latest / windows-latest matrix legs only run on real GitHub runners.)

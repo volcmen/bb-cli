@@ -9,10 +9,11 @@ fn bb() -> Command {
 
 #[test]
 fn version_flag_prints_version() {
+    let version = env!("CARGO_PKG_VERSION");
     bb().arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("bb").and(predicate::str::contains("0.1.0")));
+        .stdout(predicate::str::contains("bb").and(predicate::str::contains(version)));
 }
 
 #[test]
@@ -20,7 +21,10 @@ fn version_subcommand_prints_full_version() {
     bb().arg("version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("bb version 0.1.0"));
+        .stdout(predicate::str::contains(format!(
+            "bb version {}",
+            env!("CARGO_PKG_VERSION")
+        )));
 }
 
 #[test]
