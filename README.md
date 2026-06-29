@@ -9,6 +9,7 @@ Bitbucket API — without leaving your terminal.
 
 [![CI](https://github.com/volcmen/bb-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/volcmen/bb-cli/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/bb-cli.svg)](https://crates.io/crates/bb-cli)
+[![Downloads](https://img.shields.io/crates/d/bb-cli.svg)](https://crates.io/crates/bb-cli)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![MSRV](https://img.shields.io/badge/rustc-1.74+-orange.svg)](https://www.rust-lang.org)
 ![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)
@@ -77,14 +78,16 @@ equivalent that feels native to terminal workflows — so `bb` is that tool:
 
 ## Installation
 
-> [!NOTE]
-> Pre-built binaries and a `crates.io` release land with the first tagged
-> release. Until then, install from source — it's a single `cargo install`.
-
-**From source (works today):**
+**From crates.io** — the easiest way:
 
 ```bash
-# Install the `bb` binary straight from the repo:
+cargo install bb-cli                  # installs the `bb` binary
+```
+
+**From source:**
+
+```bash
+# Install straight from the repo:
 cargo install --git https://github.com/volcmen/bb-cli bb-cli
 
 # …or clone and build:
@@ -93,11 +96,9 @@ cargo install --path crates/bb        # installs `bb`
 cargo build --release                 # or just build → target/release/bb
 ```
 
-**From crates.io** _(once published):_
-
-```bash
-cargo install bb-cli                  # installs the `bb` binary
-```
+> [!NOTE]
+> Pre-built binaries (no Rust toolchain needed) land with the first tagged
+> release — until then, use `cargo install` above.
 
 **Pre-built binaries** _(once a release is tagged)_ — shell / PowerShell
 installers are produced by [`cargo-dist`](https://github.com/axodotdev/cargo-dist)
