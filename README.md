@@ -9,7 +9,6 @@ Bitbucket API — without leaving your terminal.
 
 [![CI](https://github.com/volcmen/bb-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/volcmen/bb-cli/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/bb-cli.svg)](https://crates.io/crates/bb-cli)
-[![Downloads](https://img.shields.io/crates/d/bb-cli.svg)](https://crates.io/crates/bb-cli)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![MSRV](https://img.shields.io/badge/rustc-1.74+-orange.svg)](https://www.rust-lang.org)
 ![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)
@@ -96,25 +95,7 @@ cargo install --path crates/bb        # installs `bb`
 cargo build --release                 # or just build → target/release/bb
 ```
 
-> [!NOTE]
-> Pre-built binaries (no Rust toolchain needed) land with the first tagged
-> release — until then, use `cargo install` above.
-
-**Pre-built binaries** _(once a release is tagged)_ — shell / PowerShell
-installers are produced by [`cargo-dist`](https://github.com/axodotdev/cargo-dist)
-for macOS (Apple Silicon + Intel), Linux (x86-64 + arm64), and Windows (x86-64):
-
-```bash
-# macOS / Linux
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/volcmen/bb-cli/releases/latest/download/bb-cli-installer.sh | sh
-```
-
-```powershell
-# Windows
-powershell -c "irm https://github.com/volcmen/bb-cli/releases/latest/download/bb-cli-installer.ps1 | iex"
-```
-
-Requires Rust **1.74+** to build from source.
+Requires Rust **1.74+**. `bb` runs on macOS, Linux, and Windows.
 
 ## Quickstart
 
