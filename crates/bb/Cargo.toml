@@ -9,6 +9,8 @@ license.workspace = true
 repository.workspace = true
 keywords = ["bitbucket", "cli", "pull-request", "git", "gh"]
 categories = ["command-line-utilities", "development-tools"]
+readme = "../../README.md"
+homepage = "https://github.com/volcmen/bb-cli"
 
 [[bin]]
 name = "bb"
