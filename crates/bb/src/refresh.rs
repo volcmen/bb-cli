@@ -18,16 +18,28 @@ use crate::render::percent_encode;
 pub struct RefreshingTransport {
     inner: Arc<dyn Transport>,
     config: Arc<dyn ConfigProvider>,
-    host: String,
 }
 
 impl RefreshingTransport {
-    pub fn new(inner: Arc<dyn Transport>, config: Arc<dyn ConfigProvider>, host: String) -> Self {
-        Self {
-            inner,
-            config,
-            host,
-        }
+    pub fn new(inner: Arc<dyn Transport>, config: Arc<dyn ConfigProvider>) -> Self {
+        Self { inner, config }
+    }
+
+    /// Find the configured host whose *stored* OAuth token is exactly the bearer
+    /// that just got a `401`. That, rather than a fixed host, is the credential
+    /// we may refresh: it scopes the refresh to the host actually being talked
+    /// to (so refresh works against any authenticated host, not just the
+    /// default), while still guaranteeing we never touch a credential that
+    /// isn't the one that failed.
+    ///
+    /// A bearer that differs from every stored token (a `BB_TOKEN` env override,
+    /// or a freshly-minted token mid-login) isn't ours to refresh: doing so
+    /// wouldn't fix this request and would clobber the stored credentials.
+    fn host_owning(&self, failed_bearer: &str) -> Option<String> {
+        self.config.hosts().into_iter().find(|host| {
+            self.config.get(host, "auth_type").as_deref() == Some(auth::OAUTH)
+                && self.config.get(host, "token").as_deref() == Some(failed_bearer)
+        })
     }
 
     /// Exchange the stored refresh token for a new access token, persist it, and
@@ -35,17 +47,7 @@ impl RefreshingTransport {
     /// `None` when refresh is not applicable or fails — the caller then surfaces
     /// the original `401`.
     fn try_refresh(&self, failed_bearer: &str) -> Option<String> {
-        let host = &self.host;
-        if self.config.get(host, "auth_type").as_deref() != Some(auth::OAUTH) {
-            return None;
-        }
-        // Only refresh the credential that actually failed — the *stored* token.
-        // A bearer that differs from what's on disk (a `BB_TOKEN` env override,
-        // or a freshly-minted token mid-login) isn't ours to refresh: doing so
-        // wouldn't fix this request and would clobber the stored credentials.
-        if self.config.get(host, "token").as_deref() != Some(failed_bearer) {
-            return None;
-        }
+        let host = &self.host_owning(failed_bearer)?;
         let refresh_token = self.config.get(host, "refresh_token")?;
         let client_id = self.config.get(host, "oauth_client_id")?;
         let client_secret = self.config.get(host, "oauth_client_secret")?;
@@ -183,7 +185,7 @@ mod tests {
             resp(200, r#"{"username":"davidd"}"#),
         ]));
         let (config, _dir) = oauth_config();
-        let t = RefreshingTransport::new(inner.clone(), config.clone(), "bitbucket.org".to_owned());
+        let t = RefreshingTransport::new(inner.clone(), config.clone());
 
         let out = t.execute(bearer_get("old-access")).unwrap();
         assert_eq!(out.status, 200);
@@ -213,7 +215,7 @@ mod tests {
     fn non_401_passes_through_without_refresh() {
         let inner = Arc::new(ScriptedTransport::new(vec![resp(200, "{}")]));
         let (config, _dir) = oauth_config();
-        let t = RefreshingTransport::new(inner.clone(), config, "bitbucket.org".to_owned());
+        let t = RefreshingTransport::new(inner.clone(), config);
 
         let out = t.execute(bearer_get("old-access")).unwrap();
         assert_eq!(out.status, 200);
@@ -229,7 +231,7 @@ mod tests {
         // No refresh_token / consumer creds stored.
         let config: Arc<dyn ConfigProvider> = Arc::new(cfg);
         let inner = Arc::new(ScriptedTransport::new(vec![resp(401, "{}")]));
-        let t = RefreshingTransport::new(inner.clone(), config, "bitbucket.org".to_owned());
+        let t = RefreshingTransport::new(inner.clone(), config);
 
         let out = t.execute(bearer_get("old")).unwrap();
         assert_eq!(out.status, 401);
@@ -241,7 +243,7 @@ mod tests {
     fn basic_auth_401_is_not_refreshed() {
         let inner = Arc::new(ScriptedTransport::new(vec![resp(401, "{}")]));
         let (config, _dir) = oauth_config();
-        let t = RefreshingTransport::new(inner.clone(), config, "bitbucket.org".to_owned());
+        let t = RefreshingTransport::new(inner.clone(), config);
 
         let req = HttpRequest::new(Method::Get, "https://api.bitbucket.org/2.0/user")
             .header("Authorization", auth::basic_header("u", "p"));
@@ -251,13 +253,44 @@ mod tests {
     }
 
     #[test]
+    fn refreshes_against_a_non_default_host() {
+        // The authed host is NOT bitbucket.org. The refresher must still find it
+        // (by matching the failed bearer to the stored token) and refresh it —
+        // previously it was pinned to DEFAULT_HOST and silently surfaced the 401.
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = FileConfig::load_from(dir.path().to_path_buf()).unwrap();
+        let host = "git.example.com";
+        cfg.set(host, "auth_type", "oauth").unwrap();
+        cfg.set(host, "token", "old-access").unwrap();
+        cfg.set(host, "refresh_token", "rt-1").unwrap();
+        cfg.set(host, "oauth_client_id", "cid").unwrap();
+        cfg.set(host, "oauth_client_secret", "csec").unwrap();
+        let config: Arc<dyn ConfigProvider> = Arc::new(cfg);
+
+        let inner = Arc::new(ScriptedTransport::new(vec![
+            resp(401, r#"{"type":"error"}"#),
+            resp(
+                200,
+                r#"{"access_token":"new-access","refresh_token":"rt-2"}"#,
+            ),
+            resp(200, r#"{"username":"davidd"}"#),
+        ]));
+        let t = RefreshingTransport::new(inner.clone(), config.clone());
+
+        let out = t.execute(bearer_get("old-access")).unwrap();
+        assert_eq!(out.status, 200);
+        assert_eq!(config.get(host, "token").as_deref(), Some("new-access"));
+        assert_eq!(inner.seen.lock().unwrap().len(), 3);
+    }
+
+    #[test]
     fn bearer_not_matching_stored_token_is_not_refreshed() {
         // The 401'd bearer differs from the stored token (e.g. a BB_TOKEN env
         // override, or a freshly-minted token mid-login). Refreshing the stored
         // creds wouldn't help this request and would clobber them, so skip it.
         let inner = Arc::new(ScriptedTransport::new(vec![resp(401, "{}")]));
         let (config, _dir) = oauth_config(); // stored token = "old-access"
-        let t = RefreshingTransport::new(inner.clone(), config.clone(), "bitbucket.org".to_owned());
+        let t = RefreshingTransport::new(inner.clone(), config.clone());
 
         let out = t.execute(bearer_get("some-other-token")).unwrap();
         assert_eq!(out.status, 401);

@@ -38,11 +38,13 @@ impl Prompter for InquirePrompter {
     }
 
     fn select(&self, message: &str, options: &[String]) -> Result<usize, PromptError> {
-        let options = options.to_vec();
-        let choice = inquire::Select::new(message, options.clone())
-            .prompt()
-            .map_err(map_err)?;
-        Ok(options.iter().position(|o| o == &choice).unwrap_or(0))
+        // `raw_prompt` returns the chosen `ListOption`, whose `index` is the
+        // authoritative position — no fragile value lookup that could silently
+        // resolve to the wrong entry when options contain duplicates.
+        inquire::Select::new(message, options.to_vec())
+            .raw_prompt()
+            .map(|choice| choice.index)
+            .map_err(map_err)
     }
 
     fn editor(&self, message: &str, initial: &str) -> Result<String, PromptError> {

@@ -49,7 +49,10 @@ struct Endpoint<'a> {
 struct EditPrBody<'a> {
     title: &'a str,
     description: &'a str,
-    destination: Endpoint<'a>,
+    /// Omitted when the base branch is unknown so we never blank out the PR's
+    /// destination by sending an empty branch name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    destination: Option<Endpoint<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reviewers: Option<Vec<super::create::Reviewer>>,
 }
@@ -124,16 +127,16 @@ pub fn run(ctx: &Context, args: EditArgs) -> anyhow::Result<()> {
         .base
         .as_deref()
         .or_else(|| current.destination.branch.as_ref().map(|b| b.name.as_str()))
-        .unwrap_or_default();
+        .filter(|b| !b.is_empty());
 
     let reviewers = resolve_reviewer_edits(&client, &repo, &args, &current)?;
 
     let payload = EditPrBody {
         title,
         description,
-        destination: Endpoint {
-            branch: BranchName { name: base },
-        },
+        destination: base.map(|name| Endpoint {
+            branch: BranchName { name },
+        }),
         reviewers,
     };
     let updated: PullRequest = client.put(&path, &payload)?;

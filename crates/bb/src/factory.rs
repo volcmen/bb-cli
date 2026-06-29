@@ -30,7 +30,6 @@ pub fn build_context(repo_override: Option<RepoId>) -> Result<Context> {
     let transport = Arc::new(crate::refresh::RefreshingTransport::new(
         inner,
         config.clone(),
-        crate::core::DEFAULT_HOST.to_owned(),
     ));
     let git = Arc::new(ShellGit::system());
     let prompter = Arc::new(InquirePrompter);
