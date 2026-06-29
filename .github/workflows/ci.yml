@@ -9,6 +9,10 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
 
+# Least privilege: CI only needs to read the repo. Overrides any broader org default.
+permissions:
+  contents: read
+
 jobs:
   fmt:
     name: rustfmt
