@@ -24,7 +24,11 @@ pub fn run(ctx: &Context, _args: StatusArgs) -> anyhow::Result<()> {
     let client = BitbucketClient::new(ctx.transport.clone(), Some(header));
 
     let me: User = client.get("/user")?;
-    let uuid = me.uuid.unwrap_or_default();
+    // Without a uuid the BBQL filters below would silently match nothing; fail
+    // loudly so the user knows their identity couldn't be resolved.
+    let uuid = me.uuid.filter(|u| !u.is_empty()).ok_or_else(|| {
+        anyhow::anyhow!("Bitbucket returned no account uuid for the current user; re-authenticate with `bb auth login`")
+    })?;
 
     // Created by you (issued first), then requesting your review.
     let authored = query(&client, &repo, &format!("author.uuid=\"{uuid}\""))?;

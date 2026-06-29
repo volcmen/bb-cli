@@ -36,6 +36,14 @@ pub(crate) fn percent_encode(s: &str) -> String {
     out
 }
 
+/// Escape a value for embedding inside a double-quoted BBQL string literal
+/// (Bitbucket's `q=` query language), so a value containing `"` can't break out
+/// of the literal and alter the query. Backslash is escaped first so the escape
+/// character itself is literal.
+pub(crate) fn bbql_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

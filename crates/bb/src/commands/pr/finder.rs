@@ -4,7 +4,7 @@
 use crate::api::{BitbucketClient, PullRequest};
 use crate::core::{Context, FlagError, RepoId};
 
-use crate::render::percent_encode;
+use crate::render::{bbql_escape, percent_encode};
 
 /// Resolve a PR from an optional `selector`:
 /// - `Some("123")` / `Some("#123")` → fetch by id.
@@ -63,7 +63,7 @@ fn find_by_branch(
     branch: &str,
 ) -> anyhow::Result<PullRequest> {
     // Escape the BBQL string literal (quotes/backslashes) before encoding.
-    let escaped = branch.replace('\\', "\\\\").replace('"', "\\\"");
+    let escaped = bbql_escape(branch);
     let q = percent_encode(&format!("source.branch.name=\"{escaped}\""));
     let path = format!(
         "/repositories/{}/{}/pullrequests?state=OPEN&q={q}",

@@ -5,7 +5,7 @@
 use crate::api::models::{CommitStatus, PullRequest};
 use crate::api::BitbucketClient;
 use crate::core::{ApiError, RepoId};
-use crate::render::percent_encode;
+use crate::render::{bbql_escape, percent_encode};
 
 /// What pull requests to list — built from `pr list` flags or a TUI section.
 #[derive(Debug, Clone)]
@@ -30,7 +30,8 @@ impl PrFilter {
         if let Some(branch) = &self.base {
             let q = format!(
                 "state=\"{}\" AND destination.branch.name=\"{}\"",
-                self.state, branch
+                bbql_escape(&self.state),
+                bbql_escape(branch)
             );
             format!("{prefix}&q={}", percent_encode(&q))
         } else {
@@ -114,6 +115,21 @@ mod tests {
         let q = percent_encode(r#"state="MERGED" AND destination.branch.name="main""#);
         assert!(path.contains(&format!("&q={q}")), "path: {path}");
         assert!(!path.contains("&state="), "path: {path}");
+    }
+
+    #[test]
+    fn filter_path_escapes_quotes_in_base_branch() {
+        // A base branch containing a quote must not break out of the BBQL string
+        // literal — it is backslash-escaped before percent-encoding.
+        let f = PrFilter {
+            state: "OPEN".to_owned(),
+            base: Some(r#"main" OR "1"="1"#.to_owned()),
+            limit: 10,
+        };
+        let path = f.path(&repo());
+        let expected_q =
+            percent_encode(r#"state="OPEN" AND destination.branch.name="main\" OR \"1\"=\"1""#);
+        assert!(path.contains(&format!("&q={expected_q}")), "path: {path}");
     }
 
     #[test]

@@ -275,26 +275,35 @@ impl MultipartPart {
 /// A fixed boundary — extremely unlikely to collide with snippet content.
 const MULTIPART_BOUNDARY: &str = "bbCLIb0undaryQx7vK3mZ9pLw2";
 
+/// Escape a value before it goes inside a quoted `Content-Disposition` parameter.
+/// Per RFC 7578 §5.1 we percent-encode the characters that would otherwise break
+/// out of the quoted string or inject extra headers: `"`, CR and LF. Without this
+/// a field name or filename like `a"\r\nX: y` could forge header lines.
+fn escape_disposition(value: &str) -> String {
+    value
+        .replace('%', "%25")
+        .replace('"', "%22")
+        .replace('\r', "%0D")
+        .replace('\n', "%0A")
+}
+
 /// Encode `parts` into a `multipart/form-data` body, returning the body bytes and
 /// the matching `Content-Type` value.
 fn encode_multipart(parts: &[MultipartPart]) -> (Vec<u8>, String) {
     let mut body = Vec::new();
     for part in parts {
         body.extend_from_slice(format!("--{MULTIPART_BOUNDARY}\r\n").as_bytes());
+        let name = escape_disposition(&part.field_name);
         match &part.filename {
             Some(filename) => body.extend_from_slice(
                 format!(
-                    "Content-Disposition: form-data; name=\"{}\"; filename=\"{}\"\r\n\r\n",
-                    part.field_name, filename
+                    "Content-Disposition: form-data; name=\"{name}\"; filename=\"{}\"\r\n\r\n",
+                    escape_disposition(filename)
                 )
                 .as_bytes(),
             ),
             None => body.extend_from_slice(
-                format!(
-                    "Content-Disposition: form-data; name=\"{}\"\r\n\r\n",
-                    part.field_name
-                )
-                .as_bytes(),
+                format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
             ),
         }
         body.extend_from_slice(&part.value);
@@ -349,6 +358,31 @@ mod tests {
     use super::*;
     use crate::api::models::{PullRequest, User};
     use crate::api::testing::FakeTransport;
+
+    #[test]
+    fn multipart_escapes_quotes_and_crlf_in_disposition() {
+        // A filename containing a quote + CRLF must not break out of the quoted
+        // Content-Disposition value or forge extra header lines.
+        let parts = vec![MultipartPart::file(
+            "evil\"\r\nX-Inject: y.txt",
+            b"data".to_vec(),
+        )];
+        let (body, _ct) = encode_multipart(&parts);
+        let text = String::from_utf8_lossy(&body);
+        let header = text
+            .lines()
+            .find(|l| l.starts_with("Content-Disposition"))
+            .unwrap();
+        // No raw quote/CR/LF leaked into the header; they are percent-encoded.
+        assert!(
+            header.contains("filename=\"evil%22%0D%0AX-Inject: y.txt\""),
+            "{header}"
+        );
+        assert!(
+            !text.contains("\r\nX-Inject: y.txt"),
+            "CRLF injected: {text}"
+        );
+    }
 
     #[test]
     fn get_parses_typed_response() {
