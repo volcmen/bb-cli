@@ -134,7 +134,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "clap_mangen",
- "getrandom 0.2.17",
+ "getrandom 0.4.3",
  "inquire",
  "jaq-core",
  "jaq-json",
