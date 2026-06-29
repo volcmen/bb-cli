@@ -25,7 +25,7 @@ reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
     "json",
 ] }
-inquire = { version = "0.7", features = ["editor"] }
+inquire = { version = "0.9", features = ["editor"] }
 etcetera = "0.8"
 base64 = "0.22"
 getrandom = "0.2"
