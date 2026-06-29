@@ -28,7 +28,7 @@ reqwest = { version = "0.12", default-features = false, features = [
 inquire = { version = "0.7", features = ["editor"] }
 etcetera = "0.8"
 base64 = "0.22"
-getrandom = "0.2"
+getrandom = "0.4"
 sha2 = "0.11"
 tinytemplate = "1.2"
 which = "8"
