@@ -253,6 +253,15 @@ cargo fmt --all --check
 cargo build --release
 ```
 
+You can reproduce the GitHub Actions CI locally with [`act`](https://github.com/nektos/act)
+(a checked-in `.actrc` selects the runner image):
+
+```bash
+act push -j fmt
+act push -j clippy
+act push -j test --matrix os:ubuntu-latest
+```
+
 Contributions are welcome — open an issue or PR. Please keep the gates green and
 follow the existing command/test conventions.
 
